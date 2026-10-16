@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ============================================================================
+    COMPASS - a hidden personal vault
+    ============================================================================
+
+    SECURITY NOTE #1 - THERE IS NO `android.permission.INTERNET`.
+
+    This app is deliberately, permanently OFFLINE. Do not "helpfully" add the
+    INTERNET permission, and do not add any library or SDK that declares it
+    transitively (check the merged manifest of every release build).
+
+    Why it matters:
+      * The vault holds the most private files a person can own. With no
+        network stack in the process, there is no code path that can exfiltrate
+        a single byte - not by a malicious library, not by a compromised
+        dependency, not by an ad SDK, not by an exploit that turns the app into
+        a bot. The exfiltration channel simply does not exist.
+      * It also means the app cannot phone home for "analytics" or crash
+        reports. That is the point.
+      * Attackers cannot remotely trigger anything in this app, because there
+        is no way to reach it. The only way in is physical access to the
+        device plus knowledge of the unlock gesture.
+
+    The permissions that ARE declared are all local, offline and narrow:
+      * USE_BIOMETRIC / USE_FINGERPRINT - to unlock with a fingerprint or face.
+      * VIBRATE - a single short haptic tick when the unlock gesture completes.
+      * READ_MEDIA_* are NOT declared: files are imported through the Storage
+        Access Framework, which grants access to exactly one file at a time
+        and needs no permission at all.
+    ============================================================================
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Biometric unlock (fingerprint / face). Legacy name kept for API 26-27. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+
+    <!-- One short haptic tick when the secret gesture completes. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- The app is a compass first: the magnetometer is central to the UX,
+         but the app stays usable (PIN unlock only) on devices without one. -->
+    <uses-feature
+        android:name="android.hardware.sensor.compass"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.fingerprint"
+        android:required="false" />
+
+    <application
+        android:name=".CompassApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:hasFragileUserData="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Compass"
+        android:usesCleartextTraffic="false">
+
+        <!--
+            Single-activity architecture: one Activity, one screen at a time.
+            FLAG_SECURE is applied to its window in MainActivity.onCreate(), so
+            EVERY screen of the app (vault list, viewer, settings) is covered
+            by the same protection.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="keyboardHidden|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

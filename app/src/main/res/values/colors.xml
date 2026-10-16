@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Strict monochrome palette. -->
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="gray">#FF9A9A9A</color>
+    <color name="gray_dim">#FF5A5A5A</color>
+    <color name="hairline">#FF1E1E1E</color>
+    <color name="icon_background">#FF000000</color>
+</resources>

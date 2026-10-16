@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+build/
+local.properties
+captures/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+release/
+
+# NOTE: dist/ is intentionally NOT ignored — the signed release APK is committed
+# so it can be downloaded straight from the repository. The exception below
+# overrides the "*.apk" rule above for that folder only.
+!dist/*.apk
+
+# apksigner v4 signature files (not needed for a normal install)
+*.idsig

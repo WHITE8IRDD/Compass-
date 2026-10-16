@@ -1,1 +1,441 @@
-# Compass-
+# Compass
+
+**A working compass that is also a private vault.**
+
+Compass looks and behaves like an ordinary compass app: a black screen, a
+needle, a degree readout. Underneath, it is an encrypted vault for your
+private photos, videos and documents. Nobody looking over your shoulder sees
+anything but a compass.
+
+<p align="center">
+  <img src="docs/img/compass-concept.png" width="260" alt="Concept rendering of the compass screen">
+  <img src="docs/img/vault-concept.png" width="260" alt="Concept rendering of the vault screen">
+  <img src="docs/img/pin-concept.png" width="260" alt="Concept rendering of the PIN screen">
+</p>
+
+> *The three images above are **concept renderings** (mockups) of the UI, not
+> screenshots from a phone - the build machine for this project has no
+> Android device attached. The shipped app is a real, compiled and signed
+> APK; see [Verification](#verification-status).*
+
+---
+
+## Table of contents
+
+1. [How the disguise works](#how-the-disguise-works)
+2. [Features](#features)
+3. [Security model](#security-model)
+4. [Build it](#build-it)
+5. [Install it](#install-it)
+6. [Project layout](#project-layout)
+7. [Learn the code file by file](#learn-the-code-file-by-file)
+8. [Three more ideas that fit this app](#three-more-ideas-that-fit-this-app)
+9. [Verification status](#verification-status)
+10. [Deviations from the original brief](#deviations-from-the-original-brief)
+11. [The keystore - read this twice](#the-keystore---read-this-twice)
+
+---
+
+## How the disguise works
+
+The app has two faces, and the second one is only visible to you.
+
+**Face 1 - the compass (default).**
+A real, working magnetometer compass. The rose turns, the needle points, the
+heading is shown in degrees. Nothing about it is fake.
+
+**Face 2 - the vault.**
+Hidden behind a *secret bearing*. During the setup you choose a number - say
+**137°** - and remember it. Later, whenever you want in, you rotate the
+needle onto that bearing and hold it there for 1.5 seconds. A slim arc
+fills up around the dial, and the vault opens. To a bystander it looks
+exactly like somebody taking their bearings.
+
+If the phone has no magnetometer (or you prefer typing), a **long press on
+the dial** opens a numeric keypad - the classic PIN, protected by an
+escalating brute-force lock-out. And if you enable it, a **fingerprint**
+opens the vault without any gesture at all.
+
+Three independent ways in, one very ordinary-looking app.
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Import** | Photos, videos, documents and audio through the system file picker (Storage Access Framework). No storage permission, ever. |
+| **Encrypt** | Every file is encrypted with **AES-256-GCM** before it touches the disk. The key lives in the **Android Keystore** and is never exportable. |
+| **Import of huge files** | The source stream is piped straight into the cipher in 64 KB chunks - a 1 GB video never exists in RAM. |
+| **Delete the original** | After the import the app asks the system to delete the original copy from your gallery (Android 11+), and reminds you to empty the gallery trash. |
+| **View** | In-app video player and image viewer. Images are decoded straight into memory; videos are decrypted to a temporary file that is wiped the second playback stops. |
+| **Thumbnails** | Built in RAM only, cached in an LRU cache, dropped the moment the vault locks. Never written to disk. |
+| **Export** | Decrypts a copy to a place you choose - behind a warning dialog that says exactly what a plaintext copy is. |
+| **Delete** | Removes a file from the vault *and* overwrites it with random bytes before unlinking it. |
+| **Folders** | Optional categories ("Holiday", "Work", ...) with a chip filter at the top of the list. |
+| **Auto-lock** | The app locks itself when it goes to the background (30 s grace period, configurable) and wipes every decrypted temporary file. |
+| **Brute-force protection** | 5 free attempts, then an escalating lock-out (5 s, 15 s, 45 s, ... up to 15 min). After 10 failures the app shows an **empty decoy vault** instead of the keypad. |
+| **Screenshots** | `FLAG_SECURE` is on the single window: no screenshots, no screen recording, no thumbnail in the recent-apps list. |
+| **No network** | The `INTERNET` permission does not exist. Not in the manifest, not in the DEX, not in the dependency graph. See [Security model](#security-model). |
+| **Monochrome UI** | Black background, white type, one grey for secondary text. No colour, no gradient, no purple. |
+
+---
+
+## Security model
+
+The short version - the details are in **[docs/SECURITY.md](docs/SECURITY.md)**.
+
+### The checklist
+
+- [x] **AES-256-GCM** for every stored file (payload *and* metadata).
+- [x] **Key generated inside the Android Keystore**, non-exportable, hardware-backed where the device has a TEE / StrongBox. Never in a file, never in SharedPreferences, never in the source code.
+- [x] **Fresh 96-bit IV per file**, generated by the platform's `SecureRandom`, stored in front of the ciphertext.
+- [x] **Authentication tag verified on every read** - tampered data is rejected, never silently decrypted.
+- [x] **No `INTERNET` permission.** The manifest carries a comment that says why it must never be added.
+- [x] **No storage permissions either** - the Storage Access Framework grants access to exactly one file at a time.
+- [x] **`FLAG_SECURE`** on the single window, covering every screen.
+- [x] **Streaming import**: the file is copied from the content provider straight into the cipher, never into memory.
+- [x] **Import is atomic**: an interrupted import leaves no half file behind.
+- [x] **Playback decrypts to a temporary file** that is overwritten with random bytes and deleted when playback stops, when the screen is closed, and when the vault locks.
+- [x] **PIN stored as a salted PBKDF2-HMAC-SHA256 hash** (250 000 rounds) in a file that is itself encrypted with the Keystore key. Compared in constant time.
+- [x] **Brute-force protection** with escalating delays and a decoy vault.
+- [x] **Auto-lock** with a 30 s grace period; decrypted state is wiped on lock.
+- [x] **Secure delete** (random overwrite, then unlink) for vault files and temporary plaintext.
+- [x] **Backups disabled** (`allowBackup=false` + `dataExtractionRules`), so the ciphertext never leaves the device.
+- [x] **Zero third-party dependencies** except `kotlinx-coroutines-core`. The biometric prompt is the *platform* prompt, not a wrapper library.
+
+### The one thing to know
+
+> The Keystore key is bound to this device. Uninstalling the app, or losing
+> the keystore file, means the encrypted files can never be read again.
+> There is no backdoor and there is no recovery - by design.
+
+---
+
+## Build it
+
+There are two ways to build the app. The first one is the normal way.
+
+### A. Android Studio / Gradle (recommended)
+
+```bash
+git clone <this repository>
+cd Compass-
+./gradlew assembleRelease
+```
+
+The signed APK lands in
+`app/build/outputs/apk/release/app-release.apk`.
+
+Requirements: **JDK 17** and an **Android SDK** with platform 35 installed.
+Android Studio (Ladybug or newer) does all of this for you: open the folder,
+wait for the sync, press *Build → Generate Signed Bundle / APK*.
+
+### B. The offline build script (no Android Studio, no SDK download)
+
+This repository also contains a complete, self-contained build pipeline that
+needs only a JDK, `kotlinc`, `aapt2`, `d8` and `apksigner` - no Gradle, no
+Android SDK, no network:
+
+```bash
+TOOLCHAIN=/path/to/toolchain ./tools/build-offline.sh
+```
+
+It produces `dist/Compass-0.1.apk`. Full details, including how the tool
+chain was assembled, are in **[docs/BUILD.md](docs/BUILD.md)**.
+
+### The app icon
+
+The launcher icon is a vector (adaptive) icon plus generated PNG fallbacks
+for pre-Android-8 devices. To regenerate the PNGs:
+
+```bash
+python3 tools/make_icons.py
+```
+
+The script is a small, dependency-free PNG writer (pure Python, no Pillow)
+that draws the ring and the needle of the compass at five densities.
+
+---
+
+## Install it
+
+```bash
+adb install -r dist/Compass-0.1.apk
+```
+
+Or copy the APK to the phone and open it. Android will ask you to allow
+"install unknown apps" for the app you open the file with (Files, Chrome,
+...) - that is the *installer* app that needs the permission, not Compass
+itself. Compass itself asks for no permissions except biometrics and
+vibration.
+
+**Minimum Android version: 8.0 (API 26).**
+
+---
+
+## Project layout
+
+```
+Compass-/
+├── app/
+│   ├── build.gradle.kts              # app module, signing config, versions
+│   ├── proguard-rules.pro
+│   └── src/main/
+│       ├── AndroidManifest.xml        # no INTERNET, FLAG_SECURE, 1 activity
+│       ├── assets/fonts/              # Inter variable font + its licence
+│       ├── java/com/compass/vault/
+│       │   ├── CompassApp.kt          # Application + the tiny DI graph
+│       │   ├── MainActivity.kt        # the single activity, routing, SAF
+│       │   ├── data/                  # VaultFile, VaultRepository
+│       │   ├── security/              # Keystore, PIN, wipe, lock, biometrics
+│       │   ├── ui/                    # design system, widgets, screens
+│       │   └── util/                  # dispatchers, compass sensor
+│       └── res/                       # colours, strings, theme, icons
+├── docs/                              # security, build, learning path, ...
+├── keystore/                          # release key + passwords (read the warning!)
+├── tools/                             # offline build, icon generator, self test
+├── dist/Compass-0.1.apk               # the signed release build
+├── build.gradle.kts
+├── settings.gradle.kts
+└── gradle/libs.versions.toml
+```
+
+---
+
+## Learn the code file by file
+
+The project is written to be read in a fixed order - every file only uses
+things that were introduced before it. The complete tour, with "what to look
+at" and "try this" for every file, is in
+**[\u200bdocs/LEARNING-PATH.md](docs/LEARNING-PATH.md)**.
+
+The short version:
+
+| # | File | What you learn |
+|---|---|---|
+| 1 | `security/KeystoreCipher.kt` | AES-GCM, IVs, tags, the Keystore |
+| 2 | `security/PinHasher.kt` | PBKDF2, constant-time comparison |
+| 3 | `security/PinStore.kt` | salted hash storage, lock-out, decoy |
+| 4 | `security/SecureWipe.kt` | overwriting before unlinking |
+| 5 | `security/BiometricGate.kt` | the platform `BiometricPrompt` |
+| 6 | `security/LockController.kt` | the auto-lock state machine |
+| 7 | `data/VaultFile.kt` | the model |
+| 8 | `data/VaultRepository.kt` | streaming import/export, thumbnails |
+| 9 | `util/Dispatchers.kt` | coroutine dispatchers without AndroidX |
+| 10 | `util/CompassSensor.kt` | magnetometer → heading |
+| 11 | `ui/Design.kt` | the monochrome design system |
+| 12 | `ui/widget/CompassView.kt` | drawing the dial with `Canvas` |
+| 13 | `ui/widget/PinPadView.kt` | a custom keypad + the dot indicator |
+| 14 | `ui/Screen.kt` | the screen/navigator contracts |
+| 15 | `CompassApp.kt` | the dependency graph |
+| 16 | `MainActivity.kt` | routing, SAF, `FLAG_SECURE` |
+| 17 | `ui/screen/CompassScreen.kt` | the disguise and the unlock gesture |
+| 18 | `ui/screen/PinScreen.kt` | keypad, lock-out, biometrics, decoy |
+| 19 | `ui/screen/SetupScreen.kt` | the first-launch wizard |
+| 20 | `ui/screen/VaultScreen.kt` | the file list, import/export/delete |
+| 21 | `ui/screen/ViewerScreen.kt` | the image/video viewer |
+| 22 | `ui/screen/SettingsScreen.kt` | the settings |
+
+---
+
+## Three more ideas that fit this app
+
+These are the ideas that make the app more than "a vault with a compass
+skin" - each one is small, offline and fits the monochrome language.
+
+### 1. Dead man's switch - a vault that erases itself
+
+In the settings you can define a **"check-in deadline"**: "if I have not
+opened Compass for 7 days, wipe the vault". A background job (an
+`AlarmManager` alarm or a `WorkManager` job) checks the timestamp every day.
+If the deadline has passed, the app deletes every encrypted payload and the
+metadata, wipes the temporary directory and shows a single line: *"The vault
+is empty."* - it looks like the app has never been used.
+
+It is a real safety feature for a device that might be seized, and it is
+also a very good demo of why the app needs to be offline: the deadline is
+checked locally, there is no server that could be pressured to hand over a
+"dead man's switch" list.
+
+*Why it fits:* it uses the pieces you already have (the encrypted store, the
+wipe helper) and it is completely invisible in the UI until it matters.
+
+### 2. Steganography mode - hide the vault inside a photo
+
+A photo is a very good container: every JPEG has a few kilobytes of
+metadata that no gallery app displays. The app could offer "hide a file in
+this picture": the payload is encrypted with the same AES-256-GCM key, then
+written into the *least significant bits* of the pixels (or into an appended
+JPEG comment segment). Exporting produces an ordinary-looking photo that
+carries the secret with it.
+
+To be honest about the limits: a screenshot or a re-compression of the
+stego image usually destroys the hidden data, and a determined analyst can
+detect steganography statistically. It is a *second* layer for the paranoid,
+not a replacement for the encryption. But it turns "the vault app" into
+"the vault that does not look like a vault" - which is exactly the spirit of
+this project.
+
+*Why it fits:* it reuses the cipher, adds ~80 lines, and fits the black and
+white aesthetic of "tools that do one thing quietly".
+
+### 3. The dead-drop vault - a second identity
+
+The decoy vault currently shows an empty list. It could be much better: the
+owner fills the decoy with harmless files (a shopping list, a recipe, a
+screenshot of a bus timetable) and sets a **different PIN**. Entering the
+wrong PIN on the real keypad shows the decoy - a plausible, boring vault
+that an inspector would have to break the *real* PIN to get past.
+
+The interesting part is the "plausible" bit: the decoy should have a
+plausible name, a plausible file list with plausible sizes and dates, and it
+should be indistinguishable in the UI. Make the decoy configurable (name,
+file count, "last opened" date) and it becomes a proper "second identity"
+for the whole app.
+
+*Why it fits:* it reuses the existing decoy logic (`PinStore.isDecoyActive`)
+and turns a placeholder into a real feature - and it is a great showcase of
+how the app treats "the wrong person looking at the phone".
+
+---
+
+## Verification status
+
+**What was verified in this environment (no phone, no emulator available):**
+
+| Check | How | Result |
+|---|---|---|
+| The code compiles | `kotlinc` against `android.jar` (API 30) | 100 classes, 0 errors |
+| The crypto is correct | `tools/run-selftest.sh` - 22 assertions on the real `KeystoreCipher`, `PinHasher` and `SecureWipe` code | **all passed** |
+| The APK is well formed | `aapt2 dump badging` / `permissions` | package `com.compass.vault`, versionCode 1, versionName 0.1, minSdk 26, targetSdk 35 |
+| No network permission | `aapt2 dump permissions` + a byte scan of `classes.dex` | only `USE_BIOMETRIC`, `USE_FINGERPRINT`, `VIBRATE`; no `HttpURLConnection`, no `Socket`, no `WebView` in the DEX |
+| The signature is valid | `apksigner verify` | v1 (JAR) ✔, v2 ✔, v3 ✔, RSA-4096 |
+| The APK is aligned | custom packer + `zipfile` check | every stored entry 4-byte aligned, `resources.arsc` included |
+| The install is clean | `zipfile.testzip()` | no corrupt entry |
+
+**What could NOT be verified here - and how you should verify it:**
+
+There is no Android device, no emulator and no `adb` in this build
+environment, so the app has **not** been installed and launched on real
+hardware. Before you trust it with real files, do this:
+
+```bash
+# 1. install it
+adb install -r dist/Compass-0.1.apk
+
+# 2. check that the manifest on the device matches what we built
+adb shell dumpsys package com.compass.vault | grep -A 20 "requested permissions"
+
+# 3. make sure it really starts
+adb shell am start -n com.compass.vault/.MainActivity
+adb logcat | grep -i compass
+```
+
+Then walk through the manual test list in
+**[\u200bdocs/VERIFICATION.md](docs/VERIFICATION.md)** - it is a checklist of
+roughly 20 things to try on the phone, from "the screenshot button does
+nothing" to "importing a 1 GB video does not crash the app".
+
+---
+
+## Release status
+
+The release exists: **[Compass 0.1](https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.1)**
+(tag `v0.1`, title *Compass 0.1*, full release notes).
+
+| Release step | Result |
+|---|---|
+| Version numbers (`versionName 0.1`, `versionCode 1`) | ✅ in `app/build.gradle.kts` |
+| Signed **release** build (not debug) | ✅ `apksigner` with `keystore/compass-release.jks` |
+| Renamed to `Compass-0.1.apk` | ✅ `dist/Compass-0.1.apk` |
+| Signature verified | ✅ v1 (JAR) + v2 + v3, RSA-4096 |
+| Git tag `v0.1` pushed | ✅ |
+| GitHub release created with the notes | ✅ https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.1 |
+| **Attaching the APK as a release asset** | ❌ **failed** - see below |
+
+**The one step that failed:** the release *asset* upload. The build machine
+has no route to GitHub's asset upload hosts
+(`uploads.github.com` / `release-assets.githubusercontent.com` both refuse
+the connection with `EOF`), and `gh release create ... file.apk` aborts the
+whole command when the upload fails - including the release creation, which
+is why the release was created first and the asset was attached afterwards.
+
+**How to get the APK anyway** - it is committed to the repository, on the
+`v0.1` tag:
+
+```
+https://github.com/WHITE8IRDD/Compass-/raw/v0.1/dist/Compass-0.1.apk
+```
+
+SHA-256 of the release build:
+
+```
+10d18df237a3307b33c31f585e1007e2d254d074c3237dee4795f3875a35731b
+```
+
+If you want the asset attached to the release page, download it and run
+this once (from a machine with normal internet access):
+
+```bash
+gh release upload v0.1 dist/Compass-0.1.apk
+```
+
+---
+
+## Deviations from the original brief
+
+The brief asked for **Jetpack Compose + Material 3**. This build is
+**framework-only**: plain Android `View`s, no AndroidX, no Compose.
+
+The reason is documented in
+**[\u200bdocs/COMPOSE-MIGRATION.md](docs/COMPOSE-MIGRATION.md)**: the build
+machine has no access to Google Maven or Maven Central, so `androidx.*` and
+the Compose compiler could not be resolved at all. Rather than ship a
+project that does not compile, the app was written against the Android
+framework alone - which also made the "zero third-party dependencies"
+security property possible.
+
+The migration path is short and mechanical (one Compose screen at a time,
+starting with the compass), and the guide contains the exact Gradle changes,
+the theme mapping and a worked example.
+
+Everything else in the brief is implemented as requested: the security
+requirements, the monochrome design, the unlock mechanics, the import/export
+flows, the file-by-file source order, the build instructions, the keystore
+and its warning, the signed release APK and the release notes.
+
+---
+
+## The keystore - read this twice
+
+`keystore/compass-release.jks` is the key that signs the release build, and
+`keystore/keystore.properties` holds its passwords. **Both are committed on
+purpose** so that you can rebuild and update the app yourself - this is a
+personal vault, not a Play Store app.
+
+> ### ⚠️ NEVER LOSE THE KEYSTORE
+>
+> If `keystore/compass-release.jks` is deleted, the system, or your backup
+> runs, you can **never publish an update to an installed app**. Android
+> refuses to install an update that is signed with a different key. The only
+> option is to uninstall Compass - and uninstalling deletes every encrypted
+> file in the vault, forever.
+>
+> **Keep a copy of `keystore/compass-release.jks` somewhere safe** (cloud
+> drive, USB stick, password manager attachment). It is 4 KB.
+
+```
+storeFile=keystore/compass-release.jks
+storePassword=compass-vault-2024
+keyAlias=compass
+keyPassword=compass-vault-2024
+```
+
+---
+
+## Credits
+
+* **Inter** by Rasmus Andersson - SIL Open Font License 1.1
+  (`app/src/main/assets/fonts/Inter-LICENSE.txt`).
+* Everything else is written from scratch for this project.

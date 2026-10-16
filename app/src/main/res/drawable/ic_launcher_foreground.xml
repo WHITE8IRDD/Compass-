@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The adaptive-icon foreground: a compass ring with a needle.
+    Drawn as a vector so it stays razor sharp on every density and so the
+    app ships without a single bitmap for the launcher.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- the ring -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M24,54 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.6" />
+
+    <!-- the needle -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,25 L62,58 L54,50 L46,58 Z" />
+
+    <!-- the hub -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,52 a2.6,2.6 0 1,0 0.01,0" />
+</vector>
