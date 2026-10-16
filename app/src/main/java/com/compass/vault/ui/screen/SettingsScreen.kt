@@ -42,6 +42,7 @@ class SettingsScreen(
 ) : Screen {
 
     private var scope = CoroutineScope(SupervisorJob() + AppDispatchers.main)
+    private var biometricHandle: com.compass.vault.security.BiometricGate.Handle? = null
     private val container = LinearLayout(activity)
 
     override val view: View = buildLayout()
@@ -85,6 +86,8 @@ class SettingsScreen(
     }
 
     override fun onHide() {
+        biometricHandle?.cancel()
+        biometricHandle = null
         scope.cancel()
     }
 
@@ -224,18 +227,36 @@ class SettingsScreen(
             buildRows()
             return
         }
-        // Only offer it when the device really has a sensor the platform
-        // prompt can use.
-        if (!com.compass.vault.security.BiometricGate(activity).isAvailable()) {
+        val gate = com.compass.vault.security.BiometricGate(activity)
+        val availability = gate.availability()
+        if (availability != com.compass.vault.security.BiometricGate.Availability.READY) {
             AlertDialog.Builder(activity)
-                .setTitle("No biometric sensor")
-                .setMessage("This device does not have a fingerprint or face sensor that the app can use.")
+                .setTitle("Biometric unlock unavailable")
+                .setMessage(gate.availabilityMessage(availability))
                 .setPositiveButton("OK", null)
                 .show()
             return
         }
-        graph.pinStore.setBiometricEnabled(true)
-        buildRows()
+        biometricHandle = gate.authenticate(
+            title = "Enable biometric unlock",
+            subtitle = "Verify your identity to enable this shortcut"
+        ) { result ->
+            biometricHandle = null
+            when (result) {
+                com.compass.vault.security.BiometricGate.Result.Success -> {
+                    graph.pinStore.setBiometricEnabled(true)
+                    buildRows()
+                }
+                com.compass.vault.security.BiometricGate.Result.Cancelled -> Unit
+                is com.compass.vault.security.BiometricGate.Result.Error -> {
+                    AlertDialog.Builder(activity)
+                        .setTitle("Could not enable biometrics")
+                        .setMessage(result.message)
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
+        }
     }
 
     private fun toggleDecoy() {
@@ -275,13 +296,13 @@ class SettingsScreen(
 
     private fun showAboutDialog() {
         AlertDialog.Builder(activity)
-            .setTitle("Compass 0.1")
+            .setTitle("Compass 0.2")
             .setMessage(
-                "A hidden vault that looks like a compass.\n\n" +
-                    "Everything inside is encrypted with AES-256-GCM. " +
-                    "The key is generated inside the Android Keystore and never leaves the device.\n\n" +
-                    "The app has no network permission: it cannot send a single byte anywhere.\n\n" +
-                    "Files live inside the app. Uninstalling it deletes them forever."
+                "A private file vault behind a compass.\n\n" +
+                    "Vault payloads are encrypted with AES-256-GCM using a key held by Android Keystore. " +
+                    "Biometric approval is an app-level gate; it does not re-wrap the encryption key.\n\n" +
+                    "Compass does not request network access permission. Explicitly exported files are plaintext copies.\n\n" +
+                    "Vault files live in app-private storage. Uninstalling or clearing app data can make them unrecoverable."
             )
             .setPositiveButton("Close", null)
             .show()

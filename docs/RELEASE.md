@@ -1,169 +1,25 @@
-# Release 0.1 - notes and checklist
+# Release status
 
-**Tag:** `v0.1` · **Title:** `Compass 0.1` · **File:** `Compass-0.1.apk`
+## Current public release
 
----
+**COMPASS 0.2** at tag [`v0.2`](https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.2) remains the GitHub Latest release. The tag and APK contents were not changed. The release notes were updated on 2026-10-16 to add a prominent APK download link and replace the obsolete keystore advice.
 
-## Release notes (copy & paste for the GitHub release)
+- Tagged APK: [`dist/Compass-0.2.apk`](https://github.com/WHITE8IRDD/Compass-/blob/v0.2/dist/Compass-0.2.apk)
+- Direct download: <https://raw.githubusercontent.com/WHITE8IRDD/Compass-/v0.2/dist/Compass-0.2.apk>
+- Size: **4,052,764 bytes**
+- SHA-256: `0d2e11e3674cb5651f692bfc5b96e9a130dff18a06e98c846e2e72e80df30f25`
+- ZIP integrity passed; APK signature schemes v1, v2, and v3 verified locally.
 
-```markdown
-## Compass 0.1
+The release currently has no binary assets attached. An attempt to upload the existing APK and checksum file failed when the build environment's connection to `uploads.github.com` returned EOF. The release page now links directly to the APK stored in the `v0.2` tag. This source tree has not been published as a new release.
 
-A working compass that is also a private, encrypted vault.
+The current-source offline APK is a separate, **unsigned test build**; it is not the published v0.2 artifact. Its checksum and limitations are recorded in [VERIFICATION.md](VERIFICATION.md).
 
-Compass looks like an ordinary compass app: a black screen, a needle, a
-degree readout. Hidden behind a secret bearing (a number *you* choose -
-hold the needle on it for 1.5 seconds) is an AES-256-GCM encrypted vault
-for your private photos, videos and documents. A long press on the dial
-opens a PIN keypad, and a fingerprint works too.
+## Signing and release safety
 
-### What is in this release
+Signing material used for the existing APK was tracked in repository history and must be treated as exposed. The files have been removed from the working tree; do not reuse the old signing identity. Current builds are unsigned by default. Optional signing is configured through externally supplied `COMPASS_RELEASE_*` environment variables; see [BUILD.md](BUILD.md).
 
-- Real magnetometer compass (rotation vector, with an accelerometer
-  fallback), drawn by hand with `Canvas` - no image assets.
-- Secret-bearing unlock, PIN unlock with an escalating brute-force
-  lock-out and a decoy vault, and biometric unlock.
-- Import through the system file picker. The bytes are streamed straight
-  into the cipher, so a 1 GB video never lands in memory.
-- Every file is encrypted with AES-256-GCM. The key is generated inside
-  the Android Keystore and is never exportable.
-- After an import the app offers to delete the original from your gallery
-  (Android 11+) and reminds you to empty the gallery trash.
-- In-app video player and image viewer. Playback decrypts to a temporary
-  file that is overwritten and deleted as soon as playback stops.
-- Export (with a warning), delete (with a secure overwrite), folders.
-- Auto-lock after a 30 second grace period, `FLAG_SECURE` on every
-  screen, backups disabled.
-- **No `INTERNET` permission. The app is permanently offline.**
+No signed APK of the current source has been produced. Any future public release needs a new version/tag and newly provisioned private signing material, plus a verified build, signature, checksum, device testing, and explicit release approval. A different signing key may prevent in-place upgrades. Do not overwrite or recreate `v0.2`.
 
-### Minimum Android version
+## Historical notes
 
-**Android 8.0 (API 26)** or newer. Biometric unlock needs Android 9 (API
-28) or newer; on older versions the PIN and the secret bearing work.
-
-### Installing it
-
-1. Download `Compass-0.1.apk` from this release.
-2. Copy it to your phone (or download it straight on the phone).
-3. Open the file. Android asks you to allow **"install unknown apps"** for
-   the app you are opening it with - that is the file manager or browser,
-   not Compass.
-4. To enable that setting manually:
-   **Settings -> Apps -> Special app access -> Install unknown apps ->
-   pick the app you are using (Files / Chrome / ...) -> Allow from this
-   source.**
-5. Go back and tap `Compass-0.1.apk` again. Done.
-
-The app itself asks for **no permissions** except biometrics and
-vibration. It cannot access your files until you pick them with the
-system picker.
-
-### First launch
-
-The setup wizard asks for a PIN (4-8 digits) and for your secret bearing.
-Then it shows one warning, and it means it:
-
-> **Files live inside the app. Uninstalling the app deletes it forever.**
-
-There is no cloud copy. If you delete the app - or lose the phone - the
-vault is gone. Keep your own backups of anything you cannot lose.
-
-### A warning about the keystore
-
-The release keystore is part of the repository (`keystore/`), because this
-is a personal app and you should be able to build updates yourself. If you
-ever lose it, Android will refuse to install any future update of this
-app, and the only way out is to uninstall - which deletes the vault.
-Back it up.
-
-### Where to get the APK
-
-The release asset could not be attached to this page by the machine that
-built it (its network blocks GitHub's asset upload host). The signed APK is
-committed to the repository and can be downloaded directly:
-
-- **https://github.com/WHITE8IRDD/Compass-/raw/v0.1/dist/Compass-0.1.apk**
-- or from the repository itself: `dist/Compass-0.1.apk` on the `v0.1` tag
-
-It is the same file: `Compass-0.1.apk`, signed with the release key
-(v1 + v2 + v3, RSA-4096). You can verify it with
-
-```bash
-apksigner verify --verbose Compass-0.1.apk
-```
-
-SHA-256 of the release build:
-
-```
-10d18df237a3307b33c31f585e1007e2d254d074c3237dee4795f3875a35731b
-```
-
-```
-
----
-
-## The tag
-
-```bash
-git tag -a v0.1 -m "Compass 0.1 - encrypted vault disguised as a compass"
-git push origin v0.1
-```
-
-## The asset
-
-```bash
-gh release create v0.1 \
-  --title "Compass 0.1" \
-  --notes-file docs/RELEASE-NOTES.md \
-  dist/Compass-0.1.apk
-```
-
----
-
-## Pre-release checklist
-
-Run through this before you tag:
-
-**Build**
-
-- [x] `versionName = "0.1"`, `versionCode = 1` in `app/build.gradle.kts`
-- [x] The build is a **release** build (not debug), signed with
-      `keystore/compass-release.jks`
-- [x] The output is renamed to `Compass-0.1.apk`
-- [x] `apksigner verify` passes (v1 + v2 + v3)
-- [x] The APK is 4-byte aligned (`resources.arsc` and `classes.dex`)
-
-**Security**
-
-- [x] No `INTERNET` permission in the manifest
-- [x] No networking class in the DEX (`HttpURLConnection`, `Socket`,
-      `WebView`, OkHttp)
-- [x] `FLAG_SECURE` is set on the single window
-- [x] `allowBackup="false"` + `dataExtractionRules`
-- [x] The crypto self test passes (22 assertions)
-- [x] The Keystore key is created with AES-256 + GCM and
-      `setRandomizedEncryptionRequired(true)`
-
-**Function**
-
-- [ ] Install and launch on a real device (`adb install -r`)
-- [ ] The setup wizard runs to the end
-- [ ] The secret bearing unlocks the vault
-- [ ] The PIN unlocks the vault, the lock-out kicks in after 5 wrong tries
-- [ ] The biometric prompt opens (Android 9+)
-- [ ] A photo imports, appears in the list, opens in the viewer
-- [ ] A video imports and plays; the temporary file is gone afterwards
-- [ ] A screenshot attempt produces a black screen
-- [ ] The app locks after the grace period and the vault needs the gesture
-      again
-
-(The last block needs a real phone - see
-[VERIFICATION.md](VERIFICATION.md) for the full manual test list.)
-
-**The "no network" promise, one more time**
-
-```bash
-aapt2 dump permissions dist/Compass-0.1.apk
-```
-
-If `INTERNET` ever shows up here, something is wrong with a dependency.
+The old v0.1 release description is preserved in [RELEASE-NOTES.md](RELEASE-NOTES.md) for historical context only. Its old signing, tag, and publication commands are obsolete and must not be used for the current source.

@@ -55,6 +55,7 @@ class SetupScreen(
     private val content = LinearLayout(activity)
     private val sensor = CompassSensor(activity)
     private val biometricGate = BiometricGate(activity)
+    private var biometricHandle: BiometricGate.Handle? = null
 
     private var step = Step.WARNING
     private var entered = StringBuilder()
@@ -103,6 +104,8 @@ class SetupScreen(
     }
 
     override fun onHide() {
+        biometricHandle?.cancel()
+        biometricHandle = null
         sensor.onHeading = null
         sensor.stop()
         scope.cancel()
@@ -263,16 +266,33 @@ class SetupScreen(
         content.addView(activity.spacer(Spacing.SM))
 
         val sub = activity.body(
-            "Use your fingerprint instead of the PIN. The PIN still works as a fallback.",
+            "Use a system biometric prompt for quicker access. Your app PIN remains the fallback.",
             Type.BODY, Palette.GRAY
         )
         sub.gravity = Gravity.CENTER
         content.addView(sub)
         content.addView(activity.spacer(Spacing.XL))
 
-        content.addView(activity.outlineButtonRow("ENABLE FINGERPRINT", {
-            graph.pinStore.setBiometricEnabled(true)
-            finishSetup()
+        content.addView(activity.outlineButtonRow("VERIFY & ENABLE BIOMETRIC", {
+            val ready = biometricGate.availability()
+            if (ready != BiometricGate.Availability.READY) {
+                navigator.toast(biometricGate.availabilityMessage(ready))
+            } else {
+                biometricHandle = biometricGate.authenticate(
+                    title = "Enable biometric unlock",
+                    subtitle = "Verify your identity to enable this shortcut"
+                ) { result ->
+                    biometricHandle = null
+                    when (result) {
+                        BiometricGate.Result.Success -> {
+                            graph.pinStore.setBiometricEnabled(true)
+                            finishSetup()
+                        }
+                        BiometricGate.Result.Cancelled -> navigator.toast("Biometric setup cancelled; PIN is still available")
+                        is BiometricGate.Result.Error -> navigator.toast(result.message)
+                    }
+                }
+            }
         }, emphasized = true))
         content.addView(activity.spacer(Spacing.MD))
         content.addView(activity.outlineButtonRow("NOT NOW", {
@@ -334,7 +354,7 @@ class SetupScreen(
      * right here.
      */
     private fun goToNextStep() {
-        if (biometricGate.isAvailable()) {
+        if (biometricGate.availability() == BiometricGate.Availability.READY) {
             step = Step.BIOMETRIC
             render()
         } else {

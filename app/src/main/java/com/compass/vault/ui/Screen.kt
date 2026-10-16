@@ -2,6 +2,7 @@ package com.compass.vault.ui
 
 import android.net.Uri
 import android.view.View
+import com.compass.vault.data.MediaFile
 import com.compass.vault.data.VaultFile
 
 /**
@@ -46,20 +47,32 @@ interface Navigator {
     /** The settings screen. */
     fun showSettings()
 
-    /** The image / video viewer. */
+    /** The image / audio / video viewer for encrypted vault content. */
     fun showViewer(file: VaultFile)
+
+    /** In-app preview for a public MediaStore row (before it is locked). */
+    fun showMediaPreview(file: MediaFile)
 
     /** Opens the system file picker for importing files. */
     fun pickFiles(mimeTypes: Array<String>, onPicked: (List<Uri>) -> Unit)
 
-    /** Opens the system "save as" dialog for exporting a file. */
+    /** Opens the system "save as" dialog for an explicit plaintext export. */
     fun pickExportTarget(suggestedName: String, onTarget: (Uri) -> Unit)
 
-    /**
-     * Asks the system to delete the original copies of the imported files.
-     * Returns false when the platform cannot do it (Android 9 and older).
-     */
-    fun requestDeleteOriginals(uris: List<Uri>): Boolean
+    /** Opens a SAF destination picker for restoring a protected document. */
+    fun pickRestoreTarget(suggestedName: String, mimeType: String, onTarget: (Uri) -> Unit)
+
+    /** Ask Android/provider to remove a public source after the encrypted copy is verified. */
+    fun requestDeleteOriginal(uri: Uri, onResult: (removed: Boolean, message: String?) -> Unit)
+
+    /** Whether the user granted read access to any shared-media collection. */
+    fun hasMediaAccess(): Boolean
+
+    /** True when Android granted only a subset of shared-media categories/items. */
+    fun hasPartialMediaAccess(): Boolean
+
+    /** Request Android media permissions (including partial visual-media access on Android 14+). */
+    fun requestMediaAccess(onResult: (Boolean) -> Unit)
 
     /** Shows a short, monochrome toast. */
     fun toast(message: String)

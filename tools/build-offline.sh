@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Offline release build of Compass.
+# Offline build and package step for Compass (unsigned unless external signing is configured).
 #
 # This is the exact same source tree that the Gradle project builds - it is
 # simply compiled with the individual tools (kotlinc, aapt2, d8, apksigner)
@@ -21,6 +21,12 @@
 #
 #   TOOLCHAIN=/path/to/toolchain ./tools/build-offline.sh
 #
+# By default this produces an unsigned APK under build/offline/out. To sign,
+# provide an owner-controlled keystore and passwords through environment
+# variables; no signing material is loaded from or written to this repository:
+# COMPASS_RELEASE_KEYSTORE, COMPASS_RELEASE_KEY_ALIAS,
+# COMPASS_RELEASE_STORE_PASSWORD, COMPASS_RELEASE_KEY_PASSWORD.
+#
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,7 +34,7 @@ cd "$ROOT"
 
 TOOLCHAIN="${TOOLCHAIN:-$HOME/tc}"
 BUILD="${BUILD:-$ROOT/build/offline}"
-OUT="${OUT:-$ROOT/dist}"
+OUT="${OUT:-$BUILD/out}"
 
 JAVA_HOME="${JAVA_HOME:-$TOOLCHAIN/jdk}"
 KOTLIN_HOME="${KOTLIN_HOME:-$TOOLCHAIN/kotlin}"
@@ -43,11 +49,21 @@ ECJ_JAR="$(ls "$BUILD_TOOLS"/ecj-*.jar | head -1)"
 COROUTINES_JAR="$KOTLIN_HOME/lib/kotlinx-coroutines-core-jvm.jar"
 KOTLIN_STDLIB_JAR="$KOTLIN_HOME/lib/kotlin-stdlib.jar"
 
-# --- signing ----------------------------------------------------------------
-KS_FILE="$ROOT/keystore/compass-release.jks"
-KS_PROPS="$ROOT/keystore/keystore.properties"
-KS_ALIAS="compass"
-KS_PASS="compass-vault-2024"
+# --- optional external signing ----------------------------------------------
+SIGNING_KEYSTORE="${COMPASS_RELEASE_KEYSTORE:-}"
+SIGNING_KEY_ALIAS="${COMPASS_RELEASE_KEY_ALIAS:-}"
+SIGNING_STORE_PASSWORD="${COMPASS_RELEASE_STORE_PASSWORD:-}"
+SIGNING_KEY_PASSWORD="${COMPASS_RELEASE_KEY_PASSWORD:-}"
+if [[ -n "$SIGNING_KEYSTORE$SIGNING_KEY_ALIAS$SIGNING_STORE_PASSWORD$SIGNING_KEY_PASSWORD" ]]; then
+    if [[ -z "$SIGNING_KEYSTORE" || -z "$SIGNING_KEY_ALIAS" || -z "$SIGNING_STORE_PASSWORD" || -z "$SIGNING_KEY_PASSWORD" ]]; then
+        echo "External signing is incomplete; set all four COMPASS_RELEASE_* variables or none." >&2
+        exit 2
+    fi
+    if [[ ! -f "$SIGNING_KEYSTORE" ]]; then
+        echo "The external signing keystore file does not exist." >&2
+        exit 2
+    fi
+fi
 
 say() { printf '\n\033[1;37m==> %s\033[0m\n' "$1"; }
 
@@ -137,22 +153,29 @@ say "Packing classes.dex"
 python3 "$ROOT/tools/apk_pack.py" \
     "$BUILD/base.apk" "classes.dex" "$BUILD/dex/classes.dex" "$BUILD/unsigned.apk"
 
-# --- 7. sign -----------------------------------------------------------------
-say "Signing (apksigner)"
-"$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" sign \
-    --ks "$KS_FILE" \
-    --ks-key-alias "$KS_ALIAS" \
-    --ks-pass "pass:$KS_PASS" \
-    --key-pass "pass:$KS_PASS" \
-    --v1-signing-enabled true \
-    --v2-signing-enabled true \
-    --v3-signing-enabled true \
-    --out "$OUT/Compass-0.2.apk" \
-    "$BUILD/unsigned.apk"
+# --- 7. optionally sign ------------------------------------------------------
+if [[ -n "$SIGNING_KEYSTORE" ]]; then
+    say "Signing with externally supplied owner-controlled credentials"
+    "$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" sign \
+        --ks "$SIGNING_KEYSTORE" \
+        --ks-key-alias "$SIGNING_KEY_ALIAS" \
+        --ks-pass env:COMPASS_RELEASE_STORE_PASSWORD \
+        --key-pass env:COMPASS_RELEASE_KEY_PASSWORD \
+        --v1-signing-enabled true \
+        --v2-signing-enabled true \
+        --v3-signing-enabled true \
+        --out "$OUT/Compass-Enhanced-0.2.apk" \
+        "$BUILD/unsigned.apk"
 
-say "Verifying"
-"$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" verify --verbose --print-certs "$OUT/Compass-0.2.apk"
-
-echo
-echo "APK: $OUT/Compass-0.2.apk"
-ls -la "$OUT/Compass-0.2.apk"
+    say "Verifying signature"
+    "$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" verify --verbose --print-certs "$OUT/Compass-Enhanced-0.2.apk"
+    echo
+    echo "Signed APK: $OUT/Compass-Enhanced-0.2.apk"
+    ls -la "$OUT/Compass-Enhanced-0.2.apk"
+else
+    say "Signing skipped; no external signing credentials configured"
+    cp "$BUILD/unsigned.apk" "$OUT/Compass-Enhanced-0.2-unsigned.apk"
+    echo
+    echo "Unsigned APK (not installable as a release): $OUT/Compass-Enhanced-0.2-unsigned.apk"
+    ls -la "$OUT/Compass-Enhanced-0.2-unsigned.apk"
+fi
