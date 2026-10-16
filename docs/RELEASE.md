@@ -6,7 +6,13 @@
 **versionName:** 2.4 · **versionCode:** 24
 
 - GitHub release: `https://github.com/WHITE8IRDD/Compass-/releases/tag/v2.4`
-- Assets: `Compass-2.4.apk` (4,007,708 bytes) and `Compass-2.4.apk.sha256`
+- **Assets: none.** The build environment can reach `api.github.com` but not
+  `uploads.github.com` (asset upload host), so the binary could not be
+  attached. The release body links the identical files committed at the tag:
+  - `https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk`
+  - `https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk.sha256`
+  - Owner command to attach them properly:
+    `gh release upload v2.4 dist/Compass-2.4.apk dist/Compass-2.4.apk.sha256`
 - Repository copy: `dist/Compass-2.4.apk`
 - SHA-256: `d7d11f41c69263394690b256721a2c09470912ccf69fb8f633c2765094ce5578`
 - Signer: RSA 4096, `CN=Compass, OU=Compass Android releases`,

@@ -3,6 +3,28 @@
 **Release name:** Compass 2.4 · **tag:** `v2.4` · **package:** `com.compass.vault` ·
 **versionCode:** 24 · **minSdk:** 26 (Android 8.0) · **targetSdk:** 35
 
+## Download
+
+The APK and its checksum could not be attached to this release as assets: the
+build environment that produced this release has network access to
+`api.github.com` but **not** to `uploads.github.com`, which is the host used
+for release asset uploads. The verified files are therefore committed in the
+repository at this exact tag:
+
+- [`Compass-2.4.apk`](https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk)
+  (4,007,708 bytes)
+- [`Compass-2.4.apk.sha256`](https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk.sha256)
+
+Verify what you downloaded before installing:
+
+```bash
+sha256sum -c Compass-2.4.apk.sha256      # or: shasum -a 256 -c
+```
+
+The project owner can also attach both files to this release (one command,
+`gh release upload v2.4 dist/Compass-2.4.apk dist/Compass-2.4.apk.sha256`)
+from a machine that can reach `uploads.github.com`; the bytes are identical.
+
 Compass 2.4 is an offline file browser with a real vault: it lists the files
 Android exposes to the app, and **Lock** moves a file into app-private
 AES-256-GCM storage - verifying the encrypted copy first and only then

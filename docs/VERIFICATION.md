@@ -224,8 +224,15 @@ These are properties of the design and of Android, not bugs to be fixed:
 
 ## 7. Release
 
-The verified artifact above was published as the GitHub release
-**Compass 2.4** (tag `v2.4`) on `WHITE8IRDD/Compass-`, with the APK and its
-SHA-256 file attached. See [RELEASE.md](RELEASE.md) and
-[RELEASE-NOTES.md](RELEASE-NOTES.md). The older **COMPASS 0.2** release and
-its APK are unchanged.
+The verified artifact above is published as the GitHub release
+**Compass 2.4** (tag `v2.4`) on `WHITE8IRDD/Compass-`, marked pre-release
+because of the missing device verification. The APK and its SHA-256 file are
+committed at that tag (`dist/Compass-2.4.apk`,
+`dist/Compass-2.4.apk.sha256`) and linked from the release notes.
+
+**They could not be attached as release assets:** this build environment can
+reach `api.github.com` but not `uploads.github.com`, the host GitHub uses for
+asset uploads (the attempt failed with a connection reset). The release body
+states this and gives the owner the one-line command to attach the identical
+files. See [RELEASE.md](RELEASE.md) and [RELEASE-NOTES.md](RELEASE-NOTES.md).
+The older **COMPASS 0.2** release and its APK are unchanged.
