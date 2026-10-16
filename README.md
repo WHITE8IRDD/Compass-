@@ -376,9 +376,11 @@ release notes. The verified APK and its SHA-256 are committed at that tag and
 linked from the release body; attaching them as release assets was not
 possible from the build environment, which cannot reach GitHub's asset-upload
 host (`uploads.github.com`). Because the APK could not be installed or
-exercised on real hardware here, the release is marked **pre-release** and the
-older **COMPASS 0.2** (tag `v0.2`) remains Latest until the device checklist
-in [the verification report](docs/VERIFICATION.md) has been executed.
+exercised on real hardware here, the release is the **Latest** one on the
+repository; the older **COMPASS 0.2** (tag `v0.2`) stays available but is no
+longer featured. The release notes state plainly that the APK has not been
+installed or exercised on hardware yet and point at the device checklist in
+[the verification report](docs/VERIFICATION.md).
 
 See [the audit](docs/AUDIT.md), [verification report](docs/VERIFICATION.md),
 [release notes](docs/RELEASE-NOTES.md) and [release status](docs/RELEASE.md).

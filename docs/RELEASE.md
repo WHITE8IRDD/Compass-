@@ -1,14 +1,15 @@
 # Release status
 
-## Compass 2.4 — published (pre-release)
+## Compass 2.4 — published (official, Latest)
 
 **Release name:** Compass 2.4 · **tag:** `v2.4` · **package:** `com.compass.vault` ·
 **versionName:** 2.4 · **versionCode:** 24
 
 - GitHub release: `https://github.com/WHITE8IRDD/Compass-/releases/tag/v2.4`
-- **Assets: none.** The build environment can reach `api.github.com` but not
-  `uploads.github.com` (asset upload host), so the binary could not be
-  attached. The release body links the identical files committed at the tag:
+- **Assets: none yet.** The build environment can reach `api.github.com` but
+  not `uploads.github.com` (asset upload host), so the binary could not be
+  attached. The release body links the identical files committed at the tag,
+  and gives the owner the one-line command to attach them:
   - `https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk`
   - `https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk.sha256`
   - Owner command to attach them properly:
@@ -18,18 +19,23 @@
 - Signer: RSA 4096, `CN=Compass, OU=Compass Android releases`,
   certificate SHA-256 `88ed48c454d52f62efa6d0299c3b7a26916c5644f991d7ac14356270a8c507be`,
   APK Signature Scheme v2 + v3 verified
-- Marked **pre-release**, so the older **COMPASS 0.2** (`v0.2`) remains the
-  GitHub "Latest" release until the manual device checklist has been run.
+- Published as an **official release** and marked **Latest**: GitHub's
+  repository sidebar and the releases page now feature **Compass 2.4**
+  instead of COMPASS 0.2. The older `v0.2` release and its APK are untouched
+  and remain downloadable.
 
-Why it is a pre-release: the APK was compiled, packaged, aligned and signed
-in an environment that has **no device, no emulator and no `adb`**, so it has
-never been installed or launched. The automated tests (135 assertions,
-including the end-to-end file transaction on the JVM) and the static checks
-pass, but MediaStore/SAF runtime behaviour, Android's delete-consent dialogs,
-biometric prompts, lifecycle and performance are unverified on real hardware.
-See [VERIFICATION.md](VERIFICATION.md) for the full list and for the manual
-device test plan. Promoting the release to "Latest" is one click once that
-checklist has been executed.
+**Device verification is still pending, and the release notes say so.** The
+APK was compiled, packaged, aligned and signed in an environment that has
+**no device, no emulator and no `adb`**, so it has never been installed or
+launched. The automated tests (135 assertions, including the end-to-end file
+transaction on the JVM) and the static checks pass, but MediaStore/SAF
+runtime behaviour, Android's delete-consent dialogs, biometric prompts,
+lifecycle and performance are unverified on real hardware. See
+[VERIFICATION.md](VERIFICATION.md) for the full list and for the manual device
+test plan. The release notes carry the same disclaimer in the "Verification"
+section, so a reader of the release page cannot mistake the checks for device
+testing. If a future build fails that checklist, the correct action is a fix
+release - not a silent re-tag.
 
 ## Signing material
 
@@ -87,5 +93,6 @@ Compass 2.4 work.
 - Never commit signing keys or passwords to the repository or paste them into
   chat/issues.
 - Attach a `.sha256` file next to every APK, and record the verification
-  results in [VERIFICATION.md](VERIFICATION.md) before changing the release
-  status from pre-release to Latest.
+  results in [VERIFICATION.md](VERIFICATION.md).
+- Keep every published tag immutable once others could have fetched it; a
+  corrected build gets a new version, never a moved tag.

@@ -89,8 +89,10 @@ background operations are cancelled when a screen is hidden.
 
 - **Release name:** Compass 2.4 (exact) · **tag:** `v2.4` ·
   https://github.com/WHITE8IRDD/Compass-/releases/tag/v2.4
-- **Marked pre-release**, so the older **COMPASS 0.2** stays "Latest" until
-  the device checklist has been run. Promoting it is one click.
+- **Official release, marked Latest**: the repository sidebar and the releases
+  page now feature Compass 2.4. The older COMPASS 0.2 stays downloadable but
+  is no longer featured. Device verification is still pending and the release
+  notes say so explicitly.
 - **APK:** `dist/Compass-2.4.apk` at the tag
   (`https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk`) and
   its `.sha256` next to it.
@@ -143,8 +145,10 @@ background operations are cancelled when a screen is hidden.
    discovery, lock/removal, restore, authentication, offline behaviour and
    crash recovery.
 2. **Attach the APK and checksum** to the `v2.4` release from a machine that
-   can reach `uploads.github.com`, and flip the release from pre-release to
-   Latest once the checklist passes.
+   can reach `uploads.github.com` (`gh release upload v2.4 dist/Compass-2.4.apk
+   dist/Compass-2.4.apk.sha256`). The release is already the official Latest
+   one; if the device checklist then finds a real defect, publish a fix
+   release instead of moving the tag.
 3. **Merge PR [#6](https://github.com/WHITE8IRDD/Compass-/pull/6)** into
    `main` (the tag already points at the head commit of that branch).
 4. **Store `compass-signing/` safely** - losing it means no future update can

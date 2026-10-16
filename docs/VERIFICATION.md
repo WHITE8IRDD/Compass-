@@ -225,8 +225,9 @@ These are properties of the design and of Android, not bugs to be fixed:
 ## 7. Release
 
 The verified artifact above is published as the GitHub release
-**Compass 2.4** (tag `v2.4`) on `WHITE8IRDD/Compass-`, marked pre-release
-because of the missing device verification. The APK and its SHA-256 file are
+**Compass 2.4** (tag `v2.4`) on `WHITE8IRDD/Compass-`. It is the official,
+Latest release; the missing device verification is stated in the release
+notes rather than hidden behind a pre-release flag. The APK and its SHA-256 file are
 committed at that tag (`dist/Compass-2.4.apk`,
 `dist/Compass-2.4.apk.sha256`) and linked from the release notes.
 

@@ -3,6 +3,13 @@
 **Release name:** Compass 2.4 · **tag:** `v2.4` · **package:** `com.compass.vault` ·
 **versionCode:** 24 · **minSdk:** 26 (Android 8.0) · **targetSdk:** 35
 
+This is the official **Compass 2.4** release and the repository's *Latest* one.
+Read the **Verification** section before installing: the APK is signed,
+checksummed and covered by 135 automated assertions, but it has **not** been
+installed or exercised on real hardware yet, so the device checklist in
+[docs/VERIFICATION.md](https://github.com/WHITE8IRDD/Compass-/blob/v2.4/docs/VERIFICATION.md)
+is still outstanding. Use disposable files for the first test.
+
 ## Download
 
 The APK and its checksum could not be attached to this release as assets: the
@@ -133,8 +140,12 @@ but never installs or executes them.
 environment, so the APK has never been installed or launched. MediaStore/SAF
 runtime behaviour, the delete-consent dialogs, biometric prompts, lifecycle,
 playback, accessibility and performance are **untested on real hardware**.
-Please treat this release as a candidate and test it with disposable files.
-The full list is in [VERIFICATION.md](VERIFICATION.md).
+Nothing above is a device test: 135 passing assertions and a verified
+signature prove that the code is correctly built and that the transaction
+rules hold on the JVM, not that a phone behaves as expected. Test this build
+with disposable files, and report a defect rather than assuming the release
+notes overstate the checks. The full list is in
+[VERIFICATION.md](VERIFICATION.md).
 
 ## Installation and the signing key
 
