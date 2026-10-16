@@ -104,7 +104,54 @@ fun main() {
         check("the app does not request INTERNET permission", !Regex("<uses-permission[^>]*android.permission.INTERNET").containsMatchIn(manifest.readText()))
     }
 
-    // --- 4. screens may not be built before the context is attached --------
+    // --- 4. file protection must be transactional -------------------------
+    val repository = File(sourceRoot, "data/VaultRepository.kt")
+    check("VaultRepository.kt was found", repository.isFile)
+    val repositoryText = if (repository.isFile) repository.readText() else ""
+    val importBody = repositoryText.substringAfter("suspend fun import(", "")
+        .substringBefore("/** Persist the platform result")
+    val verifyIndex = importBody.indexOf("MessageDigest.isEqual(originalDigest, verifiedDigest.digest())")
+    val publishIndex = importBody.indexOf("AtomicFileWriter.replace(partial, payload)")
+    val metadataIndex = importBody.indexOf("writeMetadata(file)")
+    check("import verifies ciphertext before publishing metadata", verifyIndex >= 0 && verifyIndex < publishIndex && publishIndex < metadataIndex)
+    check("repository import never deletes a public source", !importBody.contains("resolver.delete") && !importBody.contains("deleteDocument"))
+
+    val vaultScreen = File(sourceRoot, "ui/screen/VaultScreen.kt")
+    check("VaultScreen.kt was found", vaultScreen.isFile)
+    if (vaultScreen.isFile) {
+        val text = vaultScreen.readText()
+        val importUris = text.substringAfter("private fun importUris(", "")
+            .substringBefore("private fun lockMedia(")
+        check("batch flow asks Android to delete only after verified import returns",
+            importUris.indexOf("graph.repository.import(") >= 0 &&
+                importUris.indexOf("graph.repository.import(") < importUris.indexOf("requestRemoval(uri)"))
+        val lockMedia = text.substringAfter("private fun lockMedia(", "")
+            .substringBefore("private suspend fun requestRemoval(")
+        check("All Media lock flow asks Android to delete only after import returns",
+            lockMedia.indexOf("graph.repository.import(") >= 0 &&
+                lockMedia.indexOf("graph.repository.import(") < lockMedia.indexOf("requestRemoval(media.uri)"))
+        val refreshLocked = text.substringAfter("private fun refreshLocked(", "")
+            .substringBefore("// -----------------------------------------------------------------------")
+        check("empty MediaStore queries cannot silently mark originals as removed",
+            refreshLocked.contains("Do not infer a successful delete") && !refreshLocked.contains("sourceStillExists"))
+    }
+
+    val restoreOriginal = repositoryText.substringAfter("suspend fun restoreToOriginalMedia(", "")
+        .substringBefore("/**\n     * Restore to a SAF-selected destination")
+    check("original restore verifies existing source before removing encrypted copy",
+        restoreOriginal.indexOf("sourceContentMatches(file, it") >= 0 &&
+            restoreOriginal.indexOf("sourceContentMatches(file, it") < restoreOriginal.indexOf("deleteInternal(file)"))
+    check("new MediaStore restore verifies output before removing encrypted copy",
+        restoreOriginal.lastIndexOf("verifyUriDigest(") >= 0 &&
+            restoreOriginal.lastIndexOf("verifyUriDigest(") < restoreOriginal.lastIndexOf("deleteInternal(file)"))
+    val restoreUri = repositoryText.substringAfter("suspend fun restoreToUri(", "")
+        .substringBefore("/** Decrypts an explicit user-requested export")
+    check("SAF restore reads back output before removing encrypted copy",
+        restoreUri.indexOf("verifyUriDigest(") >= 0 && restoreUri.indexOf("verifyUriDigest(") < restoreUri.indexOf("deleteInternal(file)"))
+    check("corrupt vault metadata is surfaced instead of displayed as an empty vault",
+        repositoryText.contains("Vault entry metadata could not be verified") && !repositoryText.substringAfter("suspend fun list(").substringBefore("suspend fun folders").contains("mapNotNull"))
+
+    // --- 5. screens may not be built before the context is attached --------
     // The screens are constructed from MainActivity.onCreate(), which runs
     // after attachBaseContext(). A screen that created a View with the
     // activity as the context inside an *init* block would be fine, but a

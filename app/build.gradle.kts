@@ -1,27 +1,20 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
 }
 
-// ---------------------------------------------------------------------------
-// Signing
-//
-// The release keystore lives in `keystore/compass-release.jks` and its
-// passwords in `keystore/keystore.properties`. Both files are committed on
-// purpose: this is a personal, single-device vault, and the user explicitly
-// asked to be able to rebuild the APK at any time.
-//
-// !! NEVER LOSE THE KEYSTORE !!
-// If the keystore is lost you can never publish an update to an installed
-// app - the only option is to uninstall it, which deletes every file inside
-// the vault forever. See docs/SECURITY.md.
-// ---------------------------------------------------------------------------
-val keystorePropsFile = rootProject.file("keystore/keystore.properties")
-val keystoreProps = Properties().apply {
-    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
-}
+// Release signing material must be supplied from an owner-controlled location.
+// Never load a committed keystore or password file from the source tree.
+val releaseKeystorePath = providers.environmentVariable("COMPASS_RELEASE_KEYSTORE").orNull
+val releaseKeyAlias = providers.environmentVariable("COMPASS_RELEASE_KEY_ALIAS").orNull
+val releaseStorePassword = providers.environmentVariable("COMPASS_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyPassword = providers.environmentVariable("COMPASS_RELEASE_KEY_PASSWORD").orNull
+val externalSigningConfigured = listOf(
+    releaseKeystorePath,
+    releaseKeyAlias,
+    releaseStorePassword,
+    releaseKeyPassword
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.compass.vault"
@@ -38,20 +31,20 @@ android {
 
     signingConfigs {
         create("release") {
-            if (keystorePropsFile.exists()) {
-                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
-                storePassword = keystoreProps.getProperty("storePassword")
-                keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
+            if (externalSigningConfigured) {
+                storeFile = file(releaseKeystorePath!!)
+                keyAlias = releaseKeyAlias!!
+                storePassword = releaseStorePassword!!
+                keyPassword = releaseKeyPassword!!
             }
         }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false        // keep the release build byte-for-byte reproducible
+            isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.getByName("release")
+            if (externalSigningConfigured) signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {

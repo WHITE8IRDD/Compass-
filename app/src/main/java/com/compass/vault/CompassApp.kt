@@ -1,6 +1,7 @@
 package com.compass.vault
 
 import android.app.Application
+import com.compass.vault.data.MediaLibraryRepository
 import com.compass.vault.data.VaultRepository
 import com.compass.vault.security.KeystoreCipher
 import com.compass.vault.security.LockController
@@ -47,6 +48,9 @@ class AppGraph(application: Application) {
     /** Encrypted file storage. */
     val repository = VaultRepository(application, cipher)
 
+    /** Scoped MediaStore discovery and in-memory thumbnail cache. */
+    val mediaLibrary = MediaLibraryRepository(application)
+
     /** Open/locked state of the vault + the auto-lock policy. */
     val lockController = LockController(
         appContext = application,
@@ -55,5 +59,6 @@ class AppGraph(application: Application) {
         // Called whenever the vault closes: wipe decrypted temp files and
         // drop the in-memory thumbnail cache.
         repository.wipeTempFiles()
+        mediaLibrary.clearCache()
     }
 }

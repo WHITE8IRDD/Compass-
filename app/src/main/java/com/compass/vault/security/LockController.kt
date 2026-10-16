@@ -72,11 +72,13 @@ class LockController(
         autoLockJob?.cancel()
         autoLockJob = null
         isGracePeriod = false
-        onSecureCleanup()
         if (isUnlocked) {
+            // Hide protected UI and cancel its work before scheduling temp-file
+            // cleanup, so in-flight decrypt operations observe cancellation.
             isUnlocked = false
             notifyListeners(false)
         }
+        onSecureCleanup()
     }
 
     /**

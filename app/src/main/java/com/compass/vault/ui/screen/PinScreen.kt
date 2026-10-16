@@ -59,6 +59,9 @@ class PinScreen(
     private val progressView = activity.label("", Type.LABEL, Palette.GRAY, 0.12f)
 
     private val biometricGate = BiometricGate(activity)
+    private var biometricHandle: BiometricGate.Handle? = null
+    private var isVisible = false
+    private var automaticBiometricAttempted = false
 
     private var mode = Mode.VERIFY
     private var entered = StringBuilder()
@@ -182,17 +185,32 @@ class PinScreen(
         // The scope is cancelled in onHide(); a fresh one is needed when the
         // very same screen instance is shown again.
         if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + AppDispatchers.main)
+        isVisible = true
         val remaining = graph.pinStore.lockoutRemainingMs()
         if (remaining > 0) {
             lockoutUntil = SystemClock.uptimeMillis() + remaining
             progressView.post(ticker)
         }
+        val biometricReady = biometricGate.availability() == BiometricGate.Availability.READY
         fingerprintLink.visibility =
-            if (graph.pinStore.isBiometricEnabled() && biometricGate.isAvailable()) View.VISIBLE else View.GONE
-        if (graph.pinStore.isDecoyActive()) showDecoy()
+            if (mode == Mode.VERIFY && reason != PinReason.CHANGE &&
+                graph.pinStore.isBiometricEnabled() && biometricReady
+            ) View.VISIBLE else View.GONE
+        if (graph.pinStore.isDecoyActive()) {
+            showDecoy()
+        } else if (fingerprintLink.visibility == View.VISIBLE && !automaticBiometricAttempted) {
+            // Biometrics are attempted at the authentication point, not only
+            // after a second tap. The system prompt's PIN action and the PIN
+            // keypad remain available as explicit fallbacks.
+            automaticBiometricAttempted = true
+            fingerprintLink.post { if (isVisible) startBiometric() }
+        }
     }
 
     override fun onHide() {
+        isVisible = false
+        biometricHandle?.cancel()
+        biometricHandle = null
         progressView.removeCallbacks(ticker)
         scope.cancel()
     }
@@ -317,14 +335,29 @@ class PinScreen(
     }
 
     private fun startBiometric() {
-        if (!graph.pinStore.isBiometricEnabled() || !biometricGate.isAvailable()) return
-        biometricGate.authenticate(
+        if (!isVisible || mode != Mode.VERIFY || reason == PinReason.CHANGE ||
+            !graph.pinStore.isBiometricEnabled()
+        ) return
+        biometricHandle?.cancel()
+        errorView.text = ""
+        biometricHandle = biometricGate.authenticate(
             title = "Unlock Compass",
             subtitle = "Confirm your identity to open the vault"
-        ) { success ->
-            if (success) {
-                graph.lockController.unlock()
-                navigator.showVault()
+        ) { result ->
+            biometricHandle = null
+            if (!isVisible) return@authenticate
+            when (result) {
+                BiometricGate.Result.Success -> {
+                    graph.lockController.unlock()
+                    navigator.showVault()
+                }
+                BiometricGate.Result.Cancelled -> {
+                    // Cancellation is not an authentication failure; leave
+                    // the app PIN visible and usable.
+                }
+                is BiometricGate.Result.Error -> {
+                    errorView.text = result.message.ifBlank { "BIOMETRIC UNAVAILABLE - USE YOUR PIN" }
+                }
             }
         }
     }

@@ -22,12 +22,14 @@
         is no way to reach it. The only way in is physical access to the
         device plus knowledge of the unlock gesture.
 
-    The permissions that ARE declared are all local, offline and narrow:
-      * USE_BIOMETRIC / USE_FINGERPRINT - to unlock with a fingerprint or face.
-      * VIBRATE - a single short haptic tick when the unlock gesture completes.
-      * READ_MEDIA_* are NOT declared: files are imported through the Storage
-        Access Framework, which grants access to exactly one file at a time
-        and needs no permission at all.
+    The permissions that ARE declared are all local and offline:
+      * USE_BIOMETRIC / USE_FINGERPRINT - to unlock with the platform API.
+      * VIBRATE - a short haptic tick for the compass gesture.
+      * READ_MEDIA_* (or READ_EXTERNAL_STORAGE on older Android) - optional,
+        user-granted access for the MediaStore library. SAF file picking is
+        still available if the user denies library access.
+      * WRITE_EXTERNAL_STORAGE is limited to API 28 and below for legacy
+        source deletion; modern Android uses system-controlled consent.
     ============================================================================
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -38,6 +40,14 @@
 
     <!-- One short haptic tick when the secret gesture completes. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- MediaStore browsing. API 34+ may grant only user-selected visual media. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
 
     <!-- The app is a compass first: the magnetometer is central to the UX,
          but the app stays usable (PIN unlock only) on devices without one. -->

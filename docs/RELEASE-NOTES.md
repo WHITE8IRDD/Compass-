@@ -1,3 +1,7 @@
+# Historical release notes — Compass 0.1
+
+> These notes describe only the old `v0.1` artifact. The published Latest release is **COMPASS 0.2** at `v0.2`; the current working tree has not been released. The previous signing material was tracked in repository history and is considered exposed. Do not reuse it. See the current [verification report](VERIFICATION.md) and [release status](RELEASE.md).
+
 ## Compass 0.1
 
 A working compass that is also a private, encrypted vault.
@@ -59,13 +63,12 @@ Then it shows one warning, and it means it:
 There is no cloud copy. If you delete the app - or lose the phone - the
 vault is gone. Keep your own backups of anything you cannot lose.
 
-### A warning about the keystore
+### Historical signing note — obsolete
 
-The release keystore is part of the repository (`keystore/`), because this
-is a personal app and you should be able to build updates yourself. If you
-ever lose it, Android will refuse to install any future update of this
-app, and the only way out is to uninstall - which deletes the vault.
-Back it up.
+This note belonged to the v0.1 release. The signing material was tracked in
+repository history and is treated as exposed; it was removed from the current
+working tree and must not be reused. The existing v0.2 release remains
+published; no signed build of the current source has been created.
 
 ### Where to get the APK
 

@@ -58,6 +58,7 @@ class ViewerScreen(
 
     private var mediaPlayer: MediaPlayer? = null
     private var tempFile: java.io.File? = null
+    private var playbackGeneration = 0
     private var seekBar: SeekBar? = null
     private var playLabel: android.widget.TextView? = null
     private var timeLabel: android.widget.TextView? = null
@@ -101,6 +102,7 @@ class ViewerScreen(
         when {
             file.isImage -> showImage()
             file.isVideo -> showVideo()
+            file.isAudio -> showAudio()
             else -> showDocument()
         }
         return root
@@ -113,13 +115,19 @@ class ViewerScreen(
         if (file.isImage) {
             scope.launch {
                 val bitmap = graph.repository.decodeImage(file, 2048)
+                if (!scope.isActive) return@launch
                 val imageView = bodyContainer.findViewWithTag<ImageView>("image")
                 if (imageView != null && bitmap != null) {
                     imageView.setImageBitmap(bitmap)
+                } else {
+                    bodyContainer.findViewWithTag<android.widget.TextView>("loading")
+                        ?.let { it.text = "Image preview unavailable" }
                 }
                 bodyContainer.findViewWithTag<android.widget.TextView>("loading")
-                    ?.let { it.visibility = View.GONE }
+                    ?.let { it.visibility = View.VISIBLE.takeIf { bitmap == null } ?: View.GONE }
             }
+        } else if (file.isAudio && mediaPlayer == null && tempFile == null) {
+            startPlayback()
         }
     }
 
@@ -165,7 +173,7 @@ class ViewerScreen(
         surface.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) = startPlayback(holder)
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
-            override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+            override fun surfaceDestroyed(holder: SurfaceHolder) = stopPlayback()
         })
         bodyContainer.addView(surface, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
@@ -206,12 +214,58 @@ class ViewerScreen(
         bodyContainer.addView(controls)
     }
 
-    private fun startPlayback(holder: SurfaceHolder) {
+    private fun showAudio() {
+        val title = activity.body(file.name, Type.TITLE, Palette.WHITE, 500)
+        title.gravity = Gravity.CENTER
+        bodyContainer.addView(title, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        val controls = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(activity.dp(Spacing.MD), activity.dp(Spacing.SM), activity.dp(Spacing.MD), activity.dp(Spacing.SM))
+        }
+        val play = activity.label("PLAY", Type.LABEL, Palette.WHITE, 0.18f)
+        playLabel = play
+        play.setOnClickListener { togglePlayPause() }
+        controls.addView(play)
+        val seek = SeekBar(activity).apply {
+            max = 1000
+            setProgressTintList(android.content.res.ColorStateList.valueOf(Palette.WHITE))
+            setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Palette.HAIRLINE))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val player = mediaPlayer ?: return
+                    if (fromUser && player.duration > 0) {
+                        player.seekTo((player.duration.toLong() * progress / 1000L).toInt())
+                    }
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(bar: SeekBar?) = Unit
+            })
+        }
+        seekBar = seek
+        controls.addView(seek, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val time = activity.label("0:00", Type.LABEL, Palette.GRAY, 0.1f)
+        timeLabel = time
+        controls.addView(time)
+        bodyContainer.addView(controls)
+    }
+
+    private fun startPlayback(holder: SurfaceHolder? = null) {
+        if (mediaPlayer != null || tempFile != null) return
+        val generation = ++playbackGeneration
         scope.launch {
             val decrypted = try {
                 graph.repository.decryptToTemp(file)
-            } catch (e: Exception) {
-                navigator.toast("Could not decrypt the file")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (generation == playbackGeneration) navigator.toast("Could not decrypt the file")
+                return@launch
+            }
+            if (!scope.isActive || generation != playbackGeneration) {
+                graph.repository.wipeTempFile(decrypted)
                 return@launch
             }
             tempFile = decrypted
@@ -219,20 +273,36 @@ class ViewerScreen(
             try {
                 val player = MediaPlayer()
                 mediaPlayer = player
-                player.setDisplay(holder)
+                if (holder != null) player.setDisplay(holder)
                 player.setDataSource(decrypted.absolutePath)
-                player.setOnPreparedListener {
-                    it.start()
+                player.setOnPreparedListener { prepared ->
+                    if (generation != playbackGeneration || mediaPlayer !== prepared) {
+                        try { prepared.release() } catch (_: Exception) { }
+                        return@setOnPreparedListener
+                    }
+                    prepared.start()
                     playLabel?.text = "PAUSE"
                     scope.launch { updateProgress() }
                 }
-                player.setOnCompletionListener {
-                    playLabel?.text = "REPLAY"
-                    it.seekTo(0)
+                player.setOnCompletionListener { completed ->
+                    if (generation == playbackGeneration && mediaPlayer === completed) {
+                        playLabel?.text = "REPLAY"
+                        completed.seekTo(0)
+                    }
+                }
+                player.setOnErrorListener { _, _, _ ->
+                    if (generation == playbackGeneration) {
+                        stopPlayback()
+                        navigator.toast("Playback failed; the encrypted file was retained")
+                    }
+                    true
                 }
                 player.prepareAsync()
-            } catch (e: Exception) {
-                navigator.toast("Could not play this file")
+            } catch (_: Exception) {
+                if (generation == playbackGeneration) {
+                    stopPlayback()
+                    navigator.toast("Could not play this file")
+                }
             }
         }
     }
@@ -263,15 +333,14 @@ class ViewerScreen(
      * Stops playback and wipes the decrypted temporary file immediately.
      */
     private fun stopPlayback() {
-        try {
-            mediaPlayer?.let {
-                if (it.isPlaying) it.stop()
-                it.release()
-            }
-        } catch (_: Exception) {
-        }
+        playbackGeneration++
+        val player = mediaPlayer
         mediaPlayer = null
-        tempFile?.let { com.compass.vault.security.SecureWipe.wipe(it) }
+        if (player != null) {
+            try { if (player.isPlaying) player.stop() } catch (_: Exception) { }
+            try { player.release() } catch (_: Exception) { }
+        }
+        tempFile?.let { graph.repository.wipeTempFile(it) }
         tempFile = null
     }
 
