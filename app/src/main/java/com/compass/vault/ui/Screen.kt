@@ -65,14 +65,19 @@ interface Navigator {
     /** Opens a public file with an installed compatible viewer (never used for APK installation). */
     fun openPublicFile(uri: Uri, mimeType: String)
 
-    /** Opens the system "save as" dialog for an explicit plaintext export. */
-    fun pickExportTarget(suggestedName: String, onTarget: (Uri) -> Unit)
-
     /** Opens a SAF destination picker for restoring a protected document. */
     fun pickRestoreTarget(suggestedName: String, mimeType: String, onTarget: (Uri) -> Unit)
 
-    /** Ask Android/provider to remove a public source after the encrypted copy is verified. */
-    fun requestDeleteOriginal(uri: Uri, onResult: (removed: Boolean, message: String?) -> Unit)
+    /**
+     * Ask Android/provider to remove public sources after their encrypted
+     * copies have been verified. The callback reports exactly which of the
+     * passed URIs are provably gone; MediaStore items may require one system
+     * consent dialog for the whole batch.
+     */
+    fun requestDeleteOriginals(
+        uris: List<Uri>,
+        onResult: (removed: Set<String>, message: String?) -> Unit
+    )
 
     /** Whether the user granted read access to any shared-media collection. */
     fun hasMediaAccess(): Boolean

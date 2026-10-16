@@ -32,9 +32,20 @@ class MediaLibraryRepository(context: Context) {
         private const val MEDIA_TYPE_IMAGE = MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE
         private const val MEDIA_TYPE_VIDEO = MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
         private const val MEDIA_TYPE_AUDIO = MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO
+
+        /**
+         * MediaStore keeps rows for files that are not media at all (documents,
+         * APK files, archives, ...) with `media_type = 0`. On Android 10-12 the
+         * storage permission also covers those rows, so Compass can list them.
+         * On Android 13+ Android only returns media rows to an unprivileged
+         * app, and the sections stay empty until a folder is approved. The app
+         * says so instead of pretending those files do not exist.
+         */
+        private const val MEDIA_TYPE_OTHER = 0
     }
 
-    private val resolver = context.applicationContext.contentResolver
+    private val appContext = context.applicationContext
+    private val resolver = appContext.contentResolver
     private val thumbnails = object : LruCache<String, Bitmap>(THUMB_CACHE_KB) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
     }
@@ -52,6 +63,10 @@ class MediaLibraryRepository(context: Context) {
             VaultFile.Kind.IMAGE -> listOf(MEDIA_TYPE_IMAGE)
             VaultFile.Kind.VIDEO -> listOf(MEDIA_TYPE_VIDEO)
             VaultFile.Kind.AUDIO -> listOf(MEDIA_TYPE_AUDIO)
+            // The "Other files" section shows audio plus everything that is
+            // not media, because both share the same place in the design.
+            VaultFile.Kind.OTHER -> listOf(MEDIA_TYPE_AUDIO, MEDIA_TYPE_OTHER)
+            VaultFile.Kind.DOCUMENT, VaultFile.Kind.APK -> listOf(MEDIA_TYPE_OTHER)
             else -> listOf(MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_AUDIO)
         }
         val selectionParts = mutableListOf(
@@ -89,6 +104,10 @@ class MediaLibraryRepository(context: Context) {
             projection += MediaStore.MediaColumns.RELATIVE_PATH
             projection += MediaStore.MediaColumns.VOLUME_NAME
             projection += MediaStore.MediaColumns.DATE_TAKEN
+        } else {
+            // Android 8-9: the absolute path is the only reliable way to put a
+            // restored file back where it came from.
+            projection += MediaStore.MediaColumns.DATA
         }
 
         val rows = mutableListOf<MediaFile>()
@@ -138,6 +157,63 @@ class MediaLibraryRepository(context: Context) {
         }
     }
 
+    /** A thumbnail for any listed file: MediaStore rows and SAF documents. */
+    suspend fun thumbnailAny(file: MediaFile, maxPx: Int): Bitmap? = withContext(Dispatchers.IO) {
+        val key = file.uri.toString() + ":" + maxPx
+        thumbnails.get(key)?.let { return@withContext it }
+        val bitmap = try {
+            when (file.kind) {
+                VaultFile.Kind.IMAGE -> imageThumbnail(file.uri, maxPx)
+                VaultFile.Kind.VIDEO -> videoFrame(file.uri, maxPx)
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
+        if (bitmap != null) thumbnails.put(key, bitmap)
+        bitmap
+    }
+
+    /** A bigger preview used by the in-app viewer (never the full resolution). */
+    suspend fun previewAny(file: MediaFile, maxPx: Int = 2048): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            when (file.kind) {
+                VaultFile.Kind.IMAGE -> imageThumbnail(file.uri, maxPx, preferPlatformThumbnail = false)
+                VaultFile.Kind.VIDEO -> videoFrame(file.uri, maxPx)
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Decodes a bounded bitmap. The platform thumbnail service is used when it
+     * is available (Android 10+) because it keeps the full image out of the
+     * heap; otherwise the stream is decoded with `inSampleSize`.
+     */
+    private fun imageThumbnail(uri: Uri, maxPx: Int, preferPlatformThumbnail: Boolean = true): Bitmap? {
+        if (preferPlatformThumbnail && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                return resolver.loadThumbnail(uri, android.util.Size(maxPx, maxPx), CancellationSignal())
+            } catch (_: Exception) {
+                // Fall through to a sampled decode for providers without thumbnails.
+            }
+        }
+        return decodeSampled(uri, maxPx)
+    }
+
+    /** One frame of a video, read through the provider, never the whole file. */
+    private fun videoFrame(uri: Uri, maxPx: Int): Bitmap? {
+        val retriever = android.media.MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(appContext, uri)
+            retriever.getScaledFrameAtTime(1_000_000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, maxPx, maxPx)
+        } finally {
+            try { retriever.release() } catch (_: Exception) { }
+        }
+    }
+
     fun clearCache() {
         thumbnails.evictAll()
     }
@@ -153,12 +229,7 @@ class MediaLibraryRepository(context: Context) {
             MEDIA_TYPE_IMAGE -> VaultFile.Kind.IMAGE
             MEDIA_TYPE_VIDEO -> VaultFile.Kind.VIDEO
             MEDIA_TYPE_AUDIO -> VaultFile.Kind.AUDIO
-            else -> when {
-                mime.startsWith("image/") -> VaultFile.Kind.IMAGE
-                mime.startsWith("video/") -> VaultFile.Kind.VIDEO
-                mime.startsWith("audio/") -> VaultFile.Kind.AUDIO
-                else -> VaultFile.Kind.DOCUMENT
-            }
+            else -> LibraryLogic.kindFor(mime, name)
         }
         val volume = stringOrNull(MediaStore.MediaColumns.VOLUME_NAME)
             ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.VOLUME_EXTERNAL_PRIMARY else "external"
@@ -174,7 +245,8 @@ class MediaLibraryRepository(context: Context) {
             kind = kind,
             durationMs = longOrNull("duration") ?: 0L,
             volumeName = volume,
-            relativePath = stringOrNull(MediaStore.MediaColumns.RELATIVE_PATH)
+            relativePath = stringOrNull(MediaStore.MediaColumns.RELATIVE_PATH),
+            absolutePath = stringOrNull(MediaStore.MediaColumns.DATA)
         )
     }
 
@@ -200,20 +272,5 @@ class MediaLibraryRepository(context: Context) {
         return resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
     }
 
-    private fun mimeFromName(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
-        "jpg", "jpeg" -> "image/jpeg"
-        "png" -> "image/png"
-        "webp" -> "image/webp"
-        "gif" -> "image/gif"
-        "heic", "heif" -> "image/heic"
-        "mp4" -> "video/mp4"
-        "mkv" -> "video/x-matroska"
-        "mov" -> "video/quicktime"
-        "webm" -> "video/webm"
-        "mp3" -> "audio/mpeg"
-        "m4a" -> "audio/mp4"
-        "ogg", "opus" -> "audio/ogg"
-        "wav" -> "audio/wav"
-        else -> "application/octet-stream"
-    }
+    private fun mimeFromName(name: String): String = LibraryLogic.mimeFromName(name)
 }

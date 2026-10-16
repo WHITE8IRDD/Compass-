@@ -21,7 +21,20 @@ data class MediaFile(
     /** Provider document identifier, retained only in encrypted vault metadata. */
     val documentId: String? = null,
     /** Parent identifier used to recreate the file beside its original location. */
-    val parentDocumentId: String? = null
+    val parentDocumentId: String? = null,
+    /**
+     * Absolute path when Android exposes one: the `_data` column on Android 8-9
+     * and the path encoded in a SAF document id (`primary:Download/x.pdf`).
+     * Only ever used for display and for the legacy (pre-scoped-storage)
+     * restore on API 26-28; never treated as proof of access.
+     */
+    val absolutePath: String? = null,
+    /**
+     * Whether the provider advertises `FLAG_SUPPORTS_DELETE` for this
+     * document. False means locking can still encrypt a copy, but Compass
+     * must not claim that the public original was removed.
+     */
+    val deletionSupported: Boolean = true
 ) {
     enum class Source { MEDIA_STORE, SAF_TREE }
 
@@ -59,8 +72,11 @@ data class MediaPage(
 )
 
 data class TreeLibraryScan(
-    val treeUri: Uri?,
-    val rootName: String?,
-    val files: List<MediaFile>,
-    val truncated: Boolean = false
+    /** Display names of the approved folders that were scanned. */
+    val folderNames: List<String> = emptyList(),
+    val files: List<MediaFile> = emptyList(),
+    /** True when the scan hit the file/depth bound and the list is partial. */
+    val truncated: Boolean = false,
+    /** Approved folders that could not be read (revoked or restricted grants). */
+    val failedFolders: List<String> = emptyList()
 )

@@ -14,7 +14,10 @@ import android.widget.SeekBar
 import android.widget.TextView
 import com.compass.vault.AppGraph
 import com.compass.vault.MainActivity
+import com.compass.vault.data.LibraryLogic
 import com.compass.vault.data.MediaFile
+import com.compass.vault.data.VaultFile
+import com.compass.vault.ui.FileLocker
 import com.compass.vault.ui.Navigator
 import com.compass.vault.ui.Palette
 import com.compass.vault.ui.Screen
@@ -29,6 +32,7 @@ import com.compass.vault.ui.hspace
 import com.compass.vault.ui.label
 import com.compass.vault.ui.padForSystemBars
 import com.compass.vault.util.AppDispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -51,6 +55,8 @@ class MediaPreviewScreen(
     private var seekBar: SeekBar? = null
     private var timeLabel: TextView? = null
     private var visible = false
+    private var operationInProgress = false
+    private val status = activity.body("", Type.BODY, Palette.GRAY)
 
     override val view: View = buildLayout()
 
@@ -77,6 +83,12 @@ class MediaPreviewScreen(
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
         top.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val lock = activity.label("LOCK", Type.LABEL, Palette.WHITE, 0.16f).apply {
+            contentDescription = "Lock this file into the private vault"
+            setPadding(activity.dp(Spacing.SM), activity.dp(Spacing.SM), activity.dp(Spacing.SM), activity.dp(Spacing.SM))
+            setOnClickListener { confirmLock() }
+        }
+        top.addView(lock)
         val info = activity.label("INFO", Type.LABEL, Palette.GRAY, 0.16f).apply {
             contentDescription = "File information"
             setPadding(activity.dp(Spacing.SM), activity.dp(Spacing.SM), activity.dp(Spacing.SM), activity.dp(Spacing.SM))
@@ -90,6 +102,9 @@ class MediaPreviewScreen(
         content.gravity = Gravity.CENTER
         content.setBackgroundColor(Palette.BLACK)
         root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        status.visibility = View.GONE
+        status.setPadding(activity.dp(Spacing.MD), activity.dp(Spacing.SM), activity.dp(Spacing.MD), activity.dp(Spacing.SM))
+        root.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         when {
             file.kind == com.compass.vault.data.VaultFile.Kind.IMAGE -> showImage()
             file.kind == com.compass.vault.data.VaultFile.Kind.VIDEO -> showVideo()
@@ -104,7 +119,7 @@ class MediaPreviewScreen(
         visible = true
         if (file.kind == com.compass.vault.data.VaultFile.Kind.IMAGE) {
             scope.launch {
-                val bitmap: Bitmap? = graph.mediaLibrary.preview(file)
+                val bitmap: Bitmap? = graph.mediaLibrary.previewAny(file)
                 val imageView = content.findViewWithTag<ImageView>("public_image")
                 if (bitmap != null && imageView != null) imageView.setImageBitmap(bitmap)
                 content.findViewWithTag<TextView>("preview_status")?.apply {
@@ -282,13 +297,68 @@ class MediaPreviewScreen(
         }
     }
 
+    /**
+     * Locks the file that is on screen through the same transaction as the
+     * library rows: verified encryption first, then the removal of the public
+     * original, and only what Android confirms is reported as removed.
+     */
+    private fun confirmLock() {
+        if (operationInProgress) return
+        AlertDialog.Builder(activity)
+            .setTitle("Lock this file?")
+            .setMessage(
+                "\"${file.displayName}\" is encrypted into Compass' private vault, verified, then removed from its public " +
+                    "location so it disappears from galleries and file managers.\n\nCompass keeps the encrypted copy if " +
+                    "the removal is cancelled, and the file stays available in Locked Files."
+            )
+            .setPositiveButton("LOCK") { _, _ -> lock() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun lock() {
+        if (operationInProgress) return
+        operationInProgress = true
+        stopPlayback()
+        status.visibility = View.VISIBLE
+        status.text = "ENCRYPTING & VERIFYING"
+        scope.launch {
+            try {
+                val summary = FileLocker(graph, navigator).lock(listOf(file), null) { _, text ->
+                    activity.runOnUiThread { if (visible) status.text = text }
+                }
+                operationInProgress = false
+                status.visibility = View.GONE
+                val parts = ArrayList<String>()
+                if (summary.protected > 0) parts += "encrypted in the vault"
+                if (summary.removed > 0) parts += "public original removed"
+                if (summary.retained > 0) parts += "public original may remain - retry from Locked Files"
+                if (summary.failed > 0) parts += "the file could not be protected"
+                navigator.toast(if (parts.isEmpty()) "Nothing to do" else parts.joinToString(", "))
+                summary.messages.firstOrNull()?.let { navigator.toast(it) }
+                navigator.showLibrary()
+            } catch (cancelled: CancellationException) {
+                operationInProgress = false
+                status.visibility = View.GONE
+                throw cancelled
+            } catch (error: Exception) {
+                operationInProgress = false
+                status.visibility = View.GONE
+                navigator.toast("Nothing was deleted. ${error.message ?: "The file could not be protected."}")
+            }
+        }
+    }
+
     private fun showDetails() {
-        val duration = if (file.durationMs > 0) "\nDuration: ${formatDuration(file.durationMs)}" else ""
+        val duration = LibraryLogic.formatDuration(file.durationMs)
         AlertDialog.Builder(activity)
             .setTitle("File information")
             .setMessage(
-                "Name: ${file.displayName}\nType: ${file.mimeType}\nSize: ${formatSize(file.size)}" +
-                    duration + "\nLocation: ${file.relativePath ?: "MediaStore"}"
+                "Name: ${file.displayName}\nType: ${file.mimeType}\nSize: ${LibraryLogic.formatSize(file.size)}" +
+                    (if (duration.isNotEmpty()) "\nDuration: $duration" else "") +
+                    "\nLocation: ${LibraryLogic.locationLabel(file.relativePath, file.absolutePath, "Android media library")}" +
+                    "\nFound via: ${if (file.source == MediaFile.Source.SAF_TREE) "approved folder" else "media library"}" +
+                    "\nCan be removed when locked: ${if (file.deletionSupported) "yes" else "the provider refuses deletion"}"
             )
             .setPositiveButton("Close", null)
             .show()

@@ -253,7 +253,7 @@ The only Activity. It is responsible for:
 * `FLAG_SECURE` (one window, so it covers every screen),
 * routing (`renderRoute()` decides between setup / vault / compass),
 * the system picker (`ACTION_OPEN_DOCUMENT` for import,
-  `ACTION_CREATE_DOCUMENT` for export),
+  `ACTION_CREATE_DOCUMENT` for a restore destination),
 * the MediaStore delete request,
 * the auto-lock: `onStop()` switches the visible screen back to the
   compass and arms the timer, `onStart()` decides whether the vault is
@@ -294,7 +294,7 @@ The first-launch wizard, four steps:
 3. confirm the PIN
 4. pick the secret bearing (the live compass dial helps you choose)
 
-### 20. `ui/screen/VaultScreen.kt`
+### 20. `ui/screen/LibraryScreen.kt` (+ `ui/FileLocker.kt`)
 
 The file list: folder chips, the import button with a progress bar, the
 long-press action dialog (open / export / move / delete) and the "new

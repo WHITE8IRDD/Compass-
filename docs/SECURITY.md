@@ -83,7 +83,10 @@ authentication is not an independent storage boundary.
    require system consent; SAF providers may have separate behavior.
 4. Compass journals source removal before asking for consent. It records
    **PRIVATE_ONLY** only after a successful delete result and a follow-up
-   absence/read check. If the process stops during consent, recovery rechecks
+   absence/read check. On Android 11+ the removal happens in Android's own
+   consent dialog (one dialog for the whole batch); on Android 10 each medium
+   owned by another app is confirmed through `RecoverableSecurityException`,
+   one item at a time; on Android 8-9 it uses the legacy write permission. If the process stops during consent, recovery rechecks
    the exact source URI before deciding its status. A cancelled, denied,
    failed, or ambiguous removal stays public/pending and is reported as
    **not fully hidden**.
@@ -99,7 +102,7 @@ An import interrupted before completion can leave an encrypted `.part` or
 atomic-write temporary artifact until startup cleanup. The public original
 is not eligible for removal until the complete verified import has returned.
 
-## 4. Restore, export, and deletion behavior
+## 4. Restore and deletion behavior
 
 - When the original source is still readable and its digest matches, unlock
   recognizes that the identical public copy is already present; it does not
@@ -113,10 +116,12 @@ is not eligible for removal until the complete verified import has returned.
   supported confirmed private MediaStore media it attempts the saved volume
   and folder using a pending row. Both paths require read-back verification.
   Unsupported locations use the system save picker.
-- **Export** is an explicit plaintext copy. The encrypted vault copy stays
-  in place. A failed/unverifiable export attempts provider cleanup and keeps
-  the encrypted copy; provider cleanup itself can fail and the app reports
-  the limitation.
+- The plaintext **export** workflow was removed in 2.4. Lock/unlock are the
+  only flows, so a protected file has exactly one copy: the encrypted one.
+  Unlock writes the file to the recorded location (or, when that location is
+  gone, to a location the owner picks in Android's save dialog) and deletes
+  the encrypted copy only after the written bytes are verified. Nothing is
+  ever overwritten: a name conflict is restored as `name (1).ext`.
 - Deleting a protected entry is a separate user-confirmed destructive action.
   It does not delete a public source copy.
 
@@ -125,9 +130,12 @@ is not eligible for removal until the complete verified import has returned.
 - The manifest does not request `INTERNET`; shared-media access is local and
   runtime-granted. No analytics or network client is included by this app.
 - On Android 13+, image, video, and audio permissions are separate. Android
-  14+ can grant only selected visual media. All Media shows only accessible
+  14+ can grant only selected visual media. The library shows only accessible
   rows and labels partial access; users can update grants or use SAF to add
-  individual documents.
+  folders or individual documents. On Android 10-12 the storage permission
+  also exposes the non-media rows of the media database; on Android 13+ those
+  rows are not returned to an ordinary app, and the app says so instead of
+  pretending the files do not exist.
 - `allowBackup="false"`, `fullBackupContent="false"`, and extraction rules
   disable app-data backup through Android's standard app backup paths. This
   does not prevent the user from explicitly exporting plaintext or the

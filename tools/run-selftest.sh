@@ -31,11 +31,24 @@ echo "==> Compiling the self test"
     "$ROOT/app/src/main/java/com/compass/vault/security/KeystoreCipher.kt" \
     "$ROOT/app/src/main/java/com/compass/vault/security/PinHasher.kt" \
     "$ROOT/app/src/main/java/com/compass/vault/security/SecureWipe.kt" \
+    "$ROOT/app/src/main/java/com/compass/vault/data/AtomicFileWriter.kt" \
+    "$ROOT/app/src/main/java/com/compass/vault/data/LibraryLogic.kt" \
+    "$ROOT/app/src/main/java/com/compass/vault/data/VaultFile.kt" \
     "$ROOT/tools/selftest/CryptoSelfTest.kt" \
+    "$ROOT/tools/selftest/LibraryLogicTest.kt" \
+    "$ROOT/tools/selftest/VaultTransactionTest.kt" \
     "$ROOT/tools/selftest/StartupSafetyTest.kt"
 
 echo "==> Running the self test"
 "$JAVA_HOME/bin/java" -cp "$OUT:$ANDROID_JAR:$KOTLIN_HOME/lib/kotlin-stdlib.jar" com.compass.vault.selftest.CryptoSelfTestKt
+
+echo
+echo "==> Running the library logic test"
+"$JAVA_HOME/bin/java" -cp "$OUT:$ANDROID_JAR:$KOTLIN_HOME/lib/kotlin-stdlib.jar" com.compass.vault.selftest.LibraryLogicTestKt
+
+echo
+echo "==> Running the file transaction test"
+"$JAVA_HOME/bin/java" -cp "$OUT:$ANDROID_JAR:$KOTLIN_HOME/lib/kotlin-stdlib.jar" com.compass.vault.selftest.VaultTransactionTestKt
 
 echo
 echo "==> Running the startup safety test"
