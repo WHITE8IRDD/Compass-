@@ -339,6 +339,50 @@ nothing" to "importing a 1 GB video does not crash the app".
 
 ---
 
+## Release status
+
+The release exists: **[Compass 0.1](https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.1)**
+(tag `v0.1`, title *Compass 0.1*, full release notes).
+
+| Release step | Result |
+|---|---|
+| Version numbers (`versionName 0.1`, `versionCode 1`) | ✅ in `app/build.gradle.kts` |
+| Signed **release** build (not debug) | ✅ `apksigner` with `keystore/compass-release.jks` |
+| Renamed to `Compass-0.1.apk` | ✅ `dist/Compass-0.1.apk` |
+| Signature verified | ✅ v1 (JAR) + v2 + v3, RSA-4096 |
+| Git tag `v0.1` pushed | ✅ |
+| GitHub release created with the notes | ✅ https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.1 |
+| **Attaching the APK as a release asset** | ❌ **failed** - see below |
+
+**The one step that failed:** the release *asset* upload. The build machine
+has no route to GitHub's asset upload hosts
+(`uploads.github.com` / `release-assets.githubusercontent.com` both refuse
+the connection with `EOF`), and `gh release create ... file.apk` aborts the
+whole command when the upload fails - including the release creation, which
+is why the release was created first and the asset was attached afterwards.
+
+**How to get the APK anyway** - it is committed to the repository, on the
+`v0.1` tag:
+
+```
+https://github.com/WHITE8IRDD/Compass-/raw/v0.1/dist/Compass-0.1.apk
+```
+
+SHA-256 of the release build:
+
+```
+9e7ff2b64512c9cec833f2dd41440d466b9e0cfb66219fa0e577b3bfa065cf1f
+```
+
+If you want the asset attached to the release page, download it and run
+this once (from a machine with normal internet access):
+
+```bash
+gh release upload v0.1 dist/Compass-0.1.apk
+```
+
+---
+
 ## Deviations from the original brief
 
 The brief asked for **Jetpack Compose + Material 3**. This build is

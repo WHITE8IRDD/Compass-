@@ -66,3 +66,25 @@ is a personal app and you should be able to build updates yourself. If you
 ever lose it, Android will refuse to install any future update of this
 app, and the only way out is to uninstall - which deletes the vault.
 Back it up.
+
+### Where to get the APK
+
+The release asset could not be attached to this page by the machine that
+built it (its network blocks GitHub's asset upload host). The signed APK is
+committed to the repository and can be downloaded directly:
+
+- **https://github.com/WHITE8IRDD/Compass-/raw/v0.1/dist/Compass-0.1.apk**
+- or from the repository itself: `dist/Compass-0.1.apk` on the `v0.1` tag
+
+It is the same file: `Compass-0.1.apk`, signed with the release key
+(v1 + v2 + v3, RSA-4096). You can verify it with
+
+```bash
+apksigner verify --verbose Compass-0.1.apk
+```
+
+SHA-256 of the release build:
+
+```
+9e7ff2b64512c9cec833f2dd41440d466b9e0cfb66219fa0e577b3bfa065cf1f
+```
