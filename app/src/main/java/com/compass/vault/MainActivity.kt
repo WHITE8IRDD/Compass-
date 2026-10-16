@@ -49,7 +49,9 @@ class MainActivity : Activity(), Navigator {
     }
 
     private lateinit var graph: AppGraph
-    private val root = FrameLayout(this)
+    // Created in onCreate(): a field initializer runs before attachBaseContext(),
+    // so a View built here would crash with a null base context at launch.
+    private lateinit var root: FrameLayout
     private var currentScreen: Screen? = null
     private var route: String = ROUTE_COMPASS
     private var viewerFile: VaultFile? = null
@@ -107,6 +109,7 @@ class MainActivity : Activity(), Navigator {
         graph = (application as CompassApp).graph
         graph.lockController.addListener(lockListener)
 
+        root = FrameLayout(this)
         root.setBackgroundColor(Palette.BLACK)
         root.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
