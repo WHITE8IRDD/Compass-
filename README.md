@@ -177,8 +177,12 @@ that draws the ring and the needle of the compass at five densities.
 
 ## Install it
 
-The signed release APK is attached to the GitHub release **Compass 2.4**
-(tag `v2.4`) and committed as `dist/Compass-2.4.apk` with its SHA-256:
+The signed release APK is published in the GitHub release **Compass 2.4**
+(tag `v2.4`). Binary assets could not be uploaded from this build environment
+(it can reach `api.github.com` but not `uploads.github.com`), so the release
+body links the identical files committed at the tag -
+[`dist/Compass-2.4.apk`](https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk)
+and its checksum. Verify the download:
 
 ```text
 d7d11f41c69263394690b256721a2c09470912ccf69fb8f633c2765094ce5578  Compass-2.4.apk
@@ -367,12 +371,14 @@ protected, removed, restored, or authenticated on a device.
 
 ## Release status
 
-**Compass 2.4** is published as a GitHub release (tag `v2.4`) with the signed
-APK and its SHA-256 attached, plus the full release notes. Because the APK
-could not be installed or exercised on real hardware in this environment, the
-release is marked **pre-release** and the older **COMPASS 0.2** (tag `v0.2`)
-remains Latest until the device checklist in
-[the verification report](docs/VERIFICATION.md) has been executed.
+**Compass 2.4** is published as a GitHub release (tag `v2.4`) with the full
+release notes. The verified APK and its SHA-256 are committed at that tag and
+linked from the release body; attaching them as release assets was not
+possible from the build environment, which cannot reach GitHub's asset-upload
+host (`uploads.github.com`). Because the APK could not be installed or
+exercised on real hardware here, the release is marked **pre-release** and the
+older **COMPASS 0.2** (tag `v0.2`) remains Latest until the device checklist
+in [the verification report](docs/VERIFICATION.md) has been executed.
 
 See [the audit](docs/AUDIT.md), [verification report](docs/VERIFICATION.md),
 [release notes](docs/RELEASE-NOTES.md) and [release status](docs/RELEASE.md).
