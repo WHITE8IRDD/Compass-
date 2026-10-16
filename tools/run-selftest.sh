@@ -30,7 +30,12 @@ echo "==> Compiling the self test"
     "$ROOT/app/src/main/java/com/compass/vault/security/KeystoreCipher.kt" \
     "$ROOT/app/src/main/java/com/compass/vault/security/PinHasher.kt" \
     "$ROOT/app/src/main/java/com/compass/vault/security/SecureWipe.kt" \
-    "$ROOT/tools/selftest/CryptoSelfTest.kt"
+    "$ROOT/tools/selftest/CryptoSelfTest.kt" \
+    "$ROOT/tools/selftest/StartupSafetyTest.kt"
 
 echo "==> Running the self test"
 "$JAVA_HOME/bin/java" -cp "$OUT:$ANDROID_JAR:$KOTLIN_HOME/lib/kotlin-stdlib.jar" com.compass.vault.selftest.CryptoSelfTestKt
+
+echo
+echo "==> Running the startup safety test"
+"$JAVA_HOME/bin/java" -Dcompass.root="$ROOT" -cp "$OUT:$ANDROID_JAR:$KOTLIN_HOME/lib/kotlin-stdlib.jar" com.compass.vault.selftest.StartupSafetyTestKt
