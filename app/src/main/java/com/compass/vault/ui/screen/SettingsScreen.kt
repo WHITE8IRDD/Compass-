@@ -219,8 +219,22 @@ class SettingsScreen(
     }
 
     private fun toggleBiometric() {
-        val enabled = graph.pinStore.isBiometricEnabled()
-        graph.pinStore.setBiometricEnabled(!enabled)
+        if (graph.pinStore.isBiometricEnabled()) {
+            graph.pinStore.setBiometricEnabled(false)
+            buildRows()
+            return
+        }
+        // Only offer it when the device really has a sensor the platform
+        // prompt can use.
+        if (!com.compass.vault.security.BiometricGate(activity).isAvailable()) {
+            AlertDialog.Builder(activity)
+                .setTitle("No biometric sensor")
+                .setMessage("This device does not have a fingerprint or face sensor that the app can use.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        graph.pinStore.setBiometricEnabled(true)
         buildRows()
     }
 

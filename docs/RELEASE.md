@@ -95,7 +95,7 @@ apksigner verify --verbose Compass-0.1.apk
 SHA-256 of the release build:
 
 ```
-9e7ff2b64512c9cec833f2dd41440d466b9e0cfb66219fa0e577b3bfa065cf1f
+10d18df237a3307b33c31f585e1007e2d254d074c3237dee4795f3875a35731b
 ```
 
 ```

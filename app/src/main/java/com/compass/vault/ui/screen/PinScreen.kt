@@ -225,6 +225,15 @@ class PinScreen(
         val pin = entered.toString()
         entered = StringBuilder()
         dots.filled = 0
+
+        // A too short PIN is a typo, not a failed attempt: it must not
+        // count towards the brute-force lock-out.
+        if (pin.length < 4) {
+            errorView.text = "USE 4 TO 8 DIGITS"
+            shake()
+            return
+        }
+
         busy = true
 
         scope.launch {

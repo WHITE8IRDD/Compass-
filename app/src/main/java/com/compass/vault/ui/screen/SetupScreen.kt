@@ -62,6 +62,12 @@ class SetupScreen(
     private var bearing = 90f
     private var heading = 0f
 
+    /** False when the owner decides to use the PIN only. */
+    private var bearingEnabled = true
+
+    /** The dial of the "pick your mark" step. */
+    private var dial: CompassView? = null
+
     override val view: View = buildRoot()
 
     private fun buildRoot(): View {
@@ -88,7 +94,10 @@ class SetupScreen(
         if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + AppDispatchers.main)
         sensor.onHeading = { value ->
             heading = value
-            if (step == Step.BEARING) updateBearingReadout()
+            if (step == Step.BEARING) {
+                dial?.azimuth = value
+                updateBearingReadout()
+            }
         }
         if (sensor.isAvailable) sensor.start()
     }
@@ -202,6 +211,7 @@ class SetupScreen(
 
         val compass = CompassView(activity)
         compass.azimuth = heading
+        dial = compass
         content.addView(compass, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
@@ -230,18 +240,16 @@ class SetupScreen(
         content.addView(activity.spacer(Spacing.MD))
 
         content.addView(activity.outlineButtonRow("USE THIS BEARING", {
+            bearingEnabled = true
             graph.pinStore.setSecretBearing(bearing)
             graph.pinStore.setBearingEnabled(true)
-            step = if (biometricGate.isAvailable()) Step.BIOMETRIC else Step.WARNING
-            if (step == Step.WARNING) finishSetup()
-            render()
+            goToNextStep()
         }, emphasized = true))
         content.addView(activity.spacer(Spacing.SM))
         content.addView(activity.outlineButtonRow("USE THE PIN ONLY", {
+            bearingEnabled = false
             graph.pinStore.setBearingEnabled(false)
-            step = if (biometricGate.isAvailable()) Step.BIOMETRIC else Step.WARNING
-            if (step == Step.WARNING) finishSetup()
-            render()
+            goToNextStep()
         }))
         content.addView(activity.spacer(Spacing.MD))
 
@@ -320,11 +328,26 @@ class SetupScreen(
         }
     }
 
+    /**
+     * After the bearing step comes the biometric step - but only when the
+     * device actually has a biometric sensor. Without one the setup ends
+     * right here.
+     */
+    private fun goToNextStep() {
+        if (biometricGate.isAvailable()) {
+            step = Step.BIOMETRIC
+            render()
+        } else {
+            finishSetup()
+        }
+    }
+
     private fun finishSetup() {
+        val pin = firstPin ?: return
         scope.launch {
-            graph.pinStore.setPin(firstPin ?: return@launch)
+            graph.pinStore.setPin(pin)
             graph.pinStore.setSecretBearing(bearing)
-            graph.pinStore.setBearingEnabled(true)
+            graph.pinStore.setBearingEnabled(bearingEnabled)
             navigator.showCompass()
         }
     }
