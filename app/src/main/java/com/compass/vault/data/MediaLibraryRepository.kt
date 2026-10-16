@@ -44,15 +44,20 @@ class MediaLibraryRepository(context: Context) {
         query: String,
         sort: MediaSort,
         partialAccess: Boolean,
-        pageSize: Int = DEFAULT_PAGE_SIZE
+        pageSize: Int = DEFAULT_PAGE_SIZE,
+        kind: VaultFile.Kind? = null
     ): MediaPage = withContext(Dispatchers.IO) {
         val cleanQuery = query.trim()
-        val selectionParts = mutableListOf("$MEDIA_TYPE_COLUMN IN (?, ?, ?)")
-        val selectionArgs = mutableListOf(
-            MEDIA_TYPE_IMAGE.toString(),
-            MEDIA_TYPE_VIDEO.toString(),
-            MEDIA_TYPE_AUDIO.toString()
+        val mediaTypes = when (kind) {
+            VaultFile.Kind.IMAGE -> listOf(MEDIA_TYPE_IMAGE)
+            VaultFile.Kind.VIDEO -> listOf(MEDIA_TYPE_VIDEO)
+            VaultFile.Kind.AUDIO -> listOf(MEDIA_TYPE_AUDIO)
+            else -> listOf(MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_AUDIO)
+        }
+        val selectionParts = mutableListOf(
+            "$MEDIA_TYPE_COLUMN IN (${mediaTypes.joinToString(",") { "?" }})"
         )
+        val selectionArgs = mediaTypes.mapTo(mutableListOf()) { it.toString() }
         if (cleanQuery.isNotEmpty()) {
             selectionParts += "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?"
             selectionArgs += "%$cleanQuery%"

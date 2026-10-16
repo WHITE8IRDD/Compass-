@@ -1,90 +1,95 @@
-# Build Compass
+# Build Compass 2.4
 
-## Current status
+## Working-tree status
 
-The project targets Android 15 (API 35), uses Gradle/AGP for a normal build,
-and retains an offline packaging script for restricted environments. No
-release signing material is stored in the working tree. The previous signing
-material was exposed in repository history and must not be reused; the
-existing **COMPASS 0.2** GitHub release at `v0.2` is preserved.
+This branch is the **Compass 2.4** source candidate (`versionName = 2.4`,
+`versionCode = 24`), not a published release. The app targets Android 15
+(API 35). It has been compiled and packaged using the repository's offline
+validation script. A separate one-off test APK is signed for sideload testing,
+but has not been installed or tested on a device and is not a release. See
+[VERIFICATION.md](VERIFICATION.md).
 
-The offline toolchain currently available in this workspace can compile
-against API 34 and package an **unsigned** APK. It is useful for source and
-resource validation, but is not a release build and is not installable as a
-signed update. See [Verification](VERIFICATION.md) for the exact results and
-limitations.
+The existing **COMPASS 0.2** release at `v0.2` remains published and Latest;
+it is a separate, unchanged artifact. Signing material from the old release
+was exposed in repository history and must never be reused.
 
-## Gradle build (recommended)
+## Standard Gradle build
 
-Requirements:
+Recommended release toolchain:
 
 - JDK 17
 - Android SDK platform 35 and build-tools 35
-- Gradle wrapper (8.11.1); dependencies may need network access
+- Gradle wrapper 8.11.1
 
-For a local debug build:
+Debug build:
 
 ```bash
 ./gradlew assembleDebug
 ```
 
-The APK is `app/build/outputs/apk/debug/app-debug.apk`. The debug variant
-uses the `.debug` application ID suffix and is separate from the release app.
+The debug APK is `app/build/outputs/apk/debug/app-debug.apk`; its application
+ID has a `.debug` suffix and it is not the release identity.
 
-For an **unsigned** release-variant build:
+Unsigned release-variant build:
 
 ```bash
 ./gradlew assembleRelease
 ```
 
-Unless external signing is configured, AGP produces an unsigned release APK.
-Do not distribute it or treat it as installable.
+Without externally configured signing, the result is unsigned. Do not
+install or distribute it as a release.
 
-### External signing
+### External signing policy
 
-The Gradle build reads signing configuration only from the following
-environment variables; it does not read a keystore or password file from the
-repository:
+The Gradle build accepts signing configuration only from these environment
+variables; no key or password file is loaded from this repository:
 
-- `COMPASS_RELEASE_KEYSTORE` — path to an owner-controlled keystore
+- `COMPASS_RELEASE_KEYSTORE` — owner-controlled keystore path
 - `COMPASS_RELEASE_KEY_ALIAS`
 - `COMPASS_RELEASE_STORE_PASSWORD`
 - `COMPASS_RELEASE_KEY_PASSWORD`
 
-Set these through a private local environment or a secure CI secret store,
-never in source, shell history, chat, or committed Gradle properties. If any
-variable is missing, the build stays unsigned. Use only a fresh, safely
-managed key after deciding how a new signing identity will affect upgrades;
-a different key cannot update an app signed with the previous identity.
+Set them only in a private local environment or secure CI secret store. Never
+commit signing material or put passwords in source, shell history, or chat.
+Use a newly provisioned, safely backed-up key only after the owner decides
+how the new signing identity affects upgrades. The historical key is exposed
+and must not be reused; a different key cannot update an APK signed with the
+old identity.
 
-The current package version remains `0.2` / version code `3`, and the
-published `v0.2` release is already Latest. Do not overwrite or recreate it
-as part of a source build. A future public release needs an explicit version
-and release/tag decision.
+## Offline compile/package validation
 
-## Offline package validation
-
-`tools/build-offline.sh` compiles Kotlin, links Android resources, generates
-`R.java`, dexes classes, and packages the APK. It never reads signing data
-from the repository. The default output is unsigned:
+The offline toolchain can be recreated from the permitted package registries:
 
 ```bash
+./tools/bootstrap-toolchain.sh /path/to/toolchain
 TOOLCHAIN=/path/to/toolchain ./tools/build-offline.sh
 ```
 
-Default output:
+The bootstrap matches the configured Kotlin compiler version (`2.0.21`) and
+includes JDK 17, coroutines 1.8.0, an Android API 34 `android.jar`, and the
+packaging tools. The offline package path is a validation aid, not the normal
+AGP release build. Its API platform is 34 while the Gradle project declares
+compile SDK 35; its D8/R8 build emits Kotlin-metadata parsing warnings.
+Review [VERIFICATION.md](VERIFICATION.md) for the exact build result and
+caveats.
+
+Default output is an **unsigned** APK:
 
 ```text
-build/offline/out/Compass-Enhanced-0.2-unsigned.apk
+build/offline/out/Compass-2.4-unsigned.apk
 ```
 
-To produce a signed output, configure all four `COMPASS_RELEASE_*`
-environment variables listed above and run the script. It writes
-`Compass-Enhanced-0.2.apk` to the output directory and invokes `apksigner
-verify`. The script uses `env:` password sources rather than putting password
-values in command-line arguments.
+For an owner-signed release output, provide all four `COMPASS_RELEASE_*`
+variables above. The script writes `Compass-2.4.apk` and calls `apksigner
+verify`. For this session only, a separate APK was signed with a freshly
+generated temporary **test-only** key, verified, then copied to the ignored,
+session-local `downloads/Compass-2.4-test.apk`; this artifact is not committed
+or hosted on GitHub. Its keystore was deleted after signing. This
+is not an owner/release signature, cannot update the old v0.2 installation,
+and cannot update future test builds. Do not publish it or use valuable files
+for first-run testing.
 
-Optional build variables:
+Optional variables:
 
 ```text
 TOOLCHAIN          root containing JDK, Kotlin, Android tools
@@ -95,23 +100,17 @@ BUILD              scratch directory (defaults to build/offline)
 OUT                output directory (defaults to $BUILD/out)
 ```
 
-The script is a packaging aid, not a substitute for the official Gradle
-release toolchain. In the current sandbox, D8 reports Kotlin-metadata parsing
-warnings because its R8/D8 version is older than the bootstrapped Kotlin
-compiler. A successful package step does **not** clear those warnings or
-prove runtime behavior.
-
 ## Self-tests
 
 ```bash
 TOOLCHAIN=/path/to/toolchain ./tools/run-selftest.sh
 ```
 
-The script compiles the production `KeystoreCipher`, `PinHasher`, and
-`SecureWipe` classes on a desktop JVM using a test-only JCE key. It does not
-exercise Android Keystore, MediaStore, SAF, biometric hardware, or device
-permissions. `StartupSafetyTest` also performs static source checks for
-startup and file-transaction ordering.
+The crypto self-test runs production AES-GCM, PIN-hash, and wipe helpers on a
+desktop JVM with a test-only JCE key. The startup/transaction test performs
+static source checks. They do **not** exercise Android Keystore, MediaStore,
+SAF providers, permissions, biometric hardware, lifecycle timing, or the
+end-to-end lock/restore behavior on a device.
 
 ## Icon generator
 
@@ -119,5 +118,5 @@ startup and file-transaction ordering.
 python3 tools/make_icons.py
 ```
 
-This dependency-free script regenerates the PNG density fallbacks for the
-existing compass launcher icon.
+This dependency-free script regenerates the launcher icon's density-specific
+PNG fallbacks.

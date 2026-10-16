@@ -15,6 +15,7 @@ cd "$ROOT"
 
 TOOLCHAIN="${TOOLCHAIN:-$HOME/tc}"
 JAVA_HOME="${JAVA_HOME:-$TOOLCHAIN/jdk}"
+export PATH="$JAVA_HOME/bin:$PATH"
 KOTLIN_HOME="${KOTLIN_HOME:-$TOOLCHAIN/kotlin}"
 ANDROID_JAR="${ANDROID_JAR:-$TOOLCHAIN/android/platforms/android-34/android.jar}"
 OUT="${OUT:-$ROOT/build/selftest}"

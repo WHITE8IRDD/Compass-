@@ -34,9 +34,9 @@ import kotlin.math.sin
 /**
  * The numeric keypad.
  *
- * It is reached by long-pressing the compass dial, and it is the fallback
- * when the device has no magnetometer or the owner does not want to use the
- * secret bearing.
+ * It gates the Locked Files route and is also reachable from the compass
+ * shortcut; it is the fallback when the device has no biometric or the owner
+ * prefers PIN authentication.
  *
  * Brute-force protection lives in [PinStore]: after five wrong attempts the
  * app blocks for 5 seconds, then 15, 45, 135 ... up to 15 minutes. After ten
@@ -216,7 +216,7 @@ class PinScreen(
     }
 
     override fun onBack(): Boolean {
-        navigator.showCompass()
+        navigator.showLibrary()
         return true
     }
 
@@ -273,7 +273,8 @@ class PinScreen(
                     updateTitle()
                 } else {
                     graph.lockController.unlock()
-                    navigator.showVault()
+                    if (reason == PinReason.SETTINGS_ACCESS) navigator.showSettings()
+                    else navigator.showVault()
                 }
             }
 
@@ -292,6 +293,12 @@ class PinScreen(
                     progressView.post(ticker)
                 }
                 if (graph.pinStore.isDecoyActive()) showDecoy()
+            }
+
+            is PinStore.VerifyResult.StorageError -> {
+                busy = false
+                errorView.text = result.message
+                progressView.text = "VAULT ACCESS REMAINS LOCKED"
             }
 
             else -> {
@@ -342,14 +349,19 @@ class PinScreen(
         errorView.text = ""
         biometricHandle = biometricGate.authenticate(
             title = "Unlock Compass",
-            subtitle = "Confirm your identity to open the vault"
+            subtitle = if (reason == PinReason.SETTINGS_ACCESS) {
+                "Confirm your identity to access protected settings"
+            } else {
+                "Confirm your identity to open the vault"
+            }
         ) { result ->
             biometricHandle = null
             if (!isVisible) return@authenticate
             when (result) {
                 BiometricGate.Result.Success -> {
                     graph.lockController.unlock()
-                    navigator.showVault()
+                    if (reason == PinReason.SETTINGS_ACCESS) navigator.showSettings()
+                    else navigator.showVault()
                 }
                 BiometricGate.Result.Cancelled -> {
                     // Cancellation is not an authentication failure; leave
@@ -384,6 +396,7 @@ class PinScreen(
         titleView.text = when (mode) {
             Mode.VERIFY -> when (reason) {
                 PinReason.CHANGE -> "CURRENT PIN"
+                PinReason.SETTINGS_ACCESS -> "SETTINGS PIN"
                 else -> "ENTER PIN"
             }
             Mode.CREATE -> "NEW PIN"

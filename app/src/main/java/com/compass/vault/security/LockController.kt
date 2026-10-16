@@ -16,9 +16,10 @@ import kotlinx.coroutines.launch
  *
  *  * The vault is closed by default. It is opened by the secret bearing
  *    gesture, by the PIN or by a biometric.
- *  * When the app goes to the background the UI immediately switches back to
- *    the compass (so the recent-apps preview shows a compass, not the vault)
- *    and an auto-lock is armed for the grace period (30 s by default).
+ *  * When the app goes to the background the Activity immediately replaces
+ *    protected screens with the public file library (and `FLAG_SECURE` asks
+ *    Android to redact the recent-apps preview); an auto-lock is armed for
+ *    the configured grace period (30 s by default).
  *  * If the owner comes back within the grace period the vault stays open -
  *    no annoying re-authentication while you copy a link into another app.
  *  * When the grace period expires, or the process is killed, the vault is
@@ -83,7 +84,7 @@ class LockController(
 
     /**
      * Called when the activity goes to the background.
-     * The UI is switched to the compass immediately, the vault is closed
+     * The Activity replaces protected routes immediately; the vault is closed
      * after the grace period.
      */
     fun onEnteredBackground() {

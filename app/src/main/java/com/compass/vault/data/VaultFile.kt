@@ -3,8 +3,10 @@ package com.compass.vault.data
 import org.json.JSONObject
 
 /**
- * One protected vault entry. Metadata is encrypted in the vault sidecar;
- * payload bytes are stored separately as AES-GCM ciphertext.
+ * One protected vault entry. The payload and this metadata sidecar are both
+ * encrypted and live in app-private storage. Public-source and in-progress
+ * transaction state are kept so recovery never treats the index alone as
+ * proof that a file was moved successfully.
  */
 data class VaultFile(
     val id: String,
@@ -28,10 +30,18 @@ data class VaultFile(
     /** SHA-256 of the verified plaintext, used to verify restore/source copies. */
     val contentSha256: String? = null,
     /** Whether an ordinary public source is known to remain accessible. */
-    val sourceState: SourceState = SourceState.UNKNOWN
+    val sourceState: SourceState = SourceState.UNKNOWN,
+    /** Original SAF tree URI and sibling directory, both encrypted at rest. */
+    val originTreeUri: String? = null,
+    val originParentDocumentId: String? = null,
+    /** Durable transaction journal state; READY is the only steady state. */
+    val operationState: OperationState = OperationState.READY,
+    /** Output URI/name recorded before restoring bytes, allowing restart recovery. */
+    val pendingDestinationUri: String? = null,
+    val pendingDestinationName: String? = null
 ) {
 
-    enum class Kind { IMAGE, VIDEO, AUDIO, DOCUMENT }
+    enum class Kind { IMAGE, VIDEO, AUDIO, DOCUMENT, APK, OTHER }
 
     enum class SourceState {
         /** A readable/public original may still exist; do not claim fully hidden. */
@@ -42,9 +52,25 @@ data class VaultFile(
         UNKNOWN
     }
 
+    enum class OperationState {
+        READY,
+        /** Android deletion consent or SAF deletion is in progress / was interrupted. */
+        SOURCE_REMOVAL_PENDING,
+        /** A restore transaction has started but no destination URI is journaled yet. */
+        RESTORE_PREPARING,
+        /** Bytes are being written to the journaled destination. */
+        RESTORE_WRITING,
+        /** Destination read-back succeeded and publication is complete. */
+        RESTORE_PUBLISHED,
+        /** Destination status could not be resolved; keep both copies for review. */
+        RESTORE_RECOVERY_REQUIRED,
+        /** User-confirmed delete or verified restore is removing the encrypted entry. */
+        DELETE_PENDING
+    }
+
     /** Lower-case extension without the dot, e.g. `mp4`. */
     val extension: String
-        get() = name.substringAfterLast('.', "").lowercase().take(8)
+        get() = name.substringAfterLast('.', "").lowercase().take(12)
 
     val isImage: Boolean get() = kind == Kind.IMAGE
     val isVideo: Boolean get() = kind == Kind.VIDEO
@@ -65,6 +91,11 @@ data class VaultFile(
         put("originDateTaken", originDateTakenMs)
         put("sha256", contentSha256 ?: JSONObject.NULL)
         put("sourceState", sourceState.name)
+        put("originTreeUri", originTreeUri ?: JSONObject.NULL)
+        put("originParentDocumentId", originParentDocumentId ?: JSONObject.NULL)
+        put("operationState", operationState.name)
+        put("pendingDestinationUri", pendingDestinationUri ?: JSONObject.NULL)
+        put("pendingDestinationName", pendingDestinationName ?: JSONObject.NULL)
     }
 
     companion object {
@@ -74,24 +105,34 @@ data class VaultFile(
             mimeType = json.optString("mime", "application/octet-stream"),
             size = json.optLong("size", 0L),
             createdAt = json.optLong("created", 0L),
-            folder = if (json.isNull("folder")) null else json.optString("folder"),
+            folder = json.nullableString("folder"),
             durationMs = json.optLong("duration", 0L),
             kind = runCatching { Kind.valueOf(json.optString("kind", "DOCUMENT")) }
-                .getOrDefault(Kind.DOCUMENT),
+                .getOrDefault(Kind.OTHER),
             originUri = json.nullableString("originUri"),
             originVolume = json.nullableString("originVolume"),
             originRelativePath = json.nullableString("originRelativePath"),
             originDateTakenMs = json.optLong("originDateTaken", 0L),
             contentSha256 = json.nullableString("sha256"),
-            // Files written by the previous version had no origin/removal
-            // record. They must remain visibly unverified, never be reported
-            // as fully hidden by an optimistic migration default.
+            // Files written by the earlier version had no origin/removal
+            // record. They stay visibly unverified, never optimistically hidden.
             sourceState = runCatching {
                 SourceState.valueOf(json.optString("sourceState", "UNKNOWN"))
-            }.getOrDefault(SourceState.UNKNOWN)
+            }.getOrDefault(SourceState.UNKNOWN),
+            originTreeUri = json.nullableString("originTreeUri"),
+            originParentDocumentId = json.nullableString("originParentDocumentId"),
+            // Missing state is the legacy steady state. An unknown explicit
+            // value is not downgraded to READY: fail the index closed.
+            operationState = if (json.has("operationState")) {
+                OperationState.valueOf(json.optString("operationState"))
+            } else {
+                OperationState.READY
+            },
+            pendingDestinationUri = json.nullableString("pendingDestinationUri"),
+            pendingDestinationName = json.nullableString("pendingDestinationName")
         )
 
         private fun JSONObject.nullableString(key: String): String? =
-            if (isNull(key) || !has(key)) null else optString(key).takeIf { it.isNotBlank() }
+            if (!has(key) || isNull(key)) null else optString(key).takeIf { it.isNotBlank() }
     }
 }

@@ -68,7 +68,7 @@ class MediaPreviewScreen(
         val back = activity.label("BACK", Type.LABEL, Palette.WHITE, 0.18f).apply {
             contentDescription = "Back to media library"
             setPadding(0, activity.dp(Spacing.SM), 0, activity.dp(Spacing.SM))
-            setOnClickListener { navigator.showVault() }
+            setOnClickListener { navigator.showLibrary() }
         }
         top.addView(back)
         top.addView(activity.hspace(Spacing.MD))
@@ -125,7 +125,7 @@ class MediaPreviewScreen(
     }
 
     override fun onBack(): Boolean {
-        navigator.showVault()
+        navigator.showLibrary()
         return true
     }
 

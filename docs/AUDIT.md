@@ -1,88 +1,81 @@
-# Compass Enhanced 0.2 — implementation audit
+# Compass 2.4 working-tree audit
 
-**Audit date:** 2026-10-16. The working tree is based on the existing
-Compass `0.2` release source line; it is not itself a published release.
+**Audit date:** 2026-10-16. This is a source review of the Compass 2.4
+candidate, not a claim that Android storage behavior or release readiness has
+been proven. Test results are in [VERIFICATION.md](VERIFICATION.md).
 
-## Baseline findings
+## Baseline and scope
 
-Before these changes, the project had a functioning compass/PIN shell and
-AES-GCM vault, but imports were not verified before the UI offered source
-deletion, deletion consent/results were not reliably tracked, there was no
-separate public media library or restore transaction, biometric readiness
-was inferred unreliably, and the old documentation overstated device/release
-verification. The original published APK and release are retained as-is.
+The existing app already had a compass/PIN shell and AES-GCM vault, but it
+lacked a browsable public library, broad SAF folder discovery, durable
+source-removal/restore state, and reliable source-status reporting. This
+change keeps the app framework-only and offline, adds a local file browser and
+hardens the lock/unlock transaction path. The default post-setup screen is the
+library; tapping the COMPASS header opens the existing compass screen.
 
-## Implemented in the working tree
+The existing published `COMPASS 0.2` release is retained as-is. The working
+tree is versioned `2.4` / code `24` but is not published or signed.
 
-| Area | Current implementation intent | Verification status |
+## Implementation map and evidence
+
+| Area | Working-tree implementation | Evidence / limitation |
 |---|---|---|
-| Import integrity | Stream into an app-private `.part` ciphertext; decrypt to a streaming SHA-256 sink; compare byte count/digest; atomically publish payload; write encrypted metadata. Repository import never deletes the provider source. | Kotlin compile, static ordering checks, crypto tests. No Android provider/device exercise. |
-| Public source removal | After repository import returns, request Android/provider removal per item; use platform consent where required; verify source absence/read failure; persist `PRIVATE_ONLY` only on confirmed removal; preserve explicit public/unknown status otherwise. | Static source checks only. Runtime consent and provider behavior unverified. |
-| Restore/export | Restore to a known MediaStore location using a pending row where possible, or use SAF destination; verify GCM, size, digest, read-back, and final publish before deleting ciphertext. Export leaves encrypted source intact. | Static ordering checks only. Provider read-back and failure cleanup unverified. |
-| Vault library | Separate All Media (public MediaStore rows) and Locked Files views; paging, search, sorting, folders, thumbnails, file details, lock/unlock, retry source removal, restore/export/delete actions. | Kotlin compile/package checks. UI behavior unverified. |
-| Public preview/player | In-app public image preview and video/audio playback; protected viewer includes image/video/audio paths. | Kotlin compile only. Codec/Surface/permission behavior unverified. |
-| Permissions | Legacy storage permission is API-limited; modern per-media read permissions and Android 14 selected-visual-media permission are declared; SAF picker remains available. Partial access is labelled in the library. | Manifest/package inspection only. Runtime permission matrix unverified. |
-| Biometrics | Framework BiometricPrompt/Manager on newer supported Android and FingerprintManager fallback on API 26–27; enrollment/readiness and cancellation/error states surfaced; app PIN remains fallback. No biometric data is accessed. | Kotlin compile only. No hardware/device prompt test. |
-| Lock/cache cleanup | Auto-lock hides the protected route, cancels screen work, drops thumbnail caches, and schedules best-effort cleanup of private decrypted playback/cache files. | Static/code inspection only. Lock timing and filesystem behavior unverified. |
-| Metadata failure behavior | Corrupt or missing vault sidecars/payloads surface as errors rather than silently presenting a valid empty vault; folder metadata failures are surfaced too. | Static test and compile. No corruption/device test. |
-| Signing configuration | Signing files removed from the working tree; Gradle/offline builds use optional external signing environment variables rather than committed key/password files. | Source inspected. Existing Git history still contains prior tracked signing material. |
+| Public library | Paged MediaStore image/video/audio rows; SAF-selected tree scan for accessible documents, APKs, and other files; category chips, file type indicators, thumbnails/previews, name search, sort, refresh, and permission/truncation messaging. | Kotlin/offline package compile and static inspection. No Android provider, permission, UI, or performance test. SAF scan is bounded (10,000 files, depth 16); it cannot discover arbitrary shared storage. |
+| Import integrity | Stream source into an app-private encrypted `.part`, decrypt ciphertext into a SHA-256 sink, check size/digest, atomically publish ciphertext, then write encrypted sidecar metadata. Repository import never deletes the source. | Crypto self-tests and source-ordering checks. No SAF/MediaStore end-to-end import test. |
+| Public source removal | Persist `SOURCE_REMOVAL_PENDING` before requesting provider deletion; use Android consent for MediaStore where required; verify absence/read failure; mark `PRIVATE_ONLY` only after confirmed removal. Recovery rechecks a pending source after process death. | Static checks only. Android consent and provider behavior are unverified. A public original, recycle-bin copy, cloud copy, or alternate URI may remain. |
+| Restore/recovery | Journal restore state and destination; attempt recorded SAF folder or MediaStore location when known; use a user-selected SAF destination otherwise; verify ciphertext, byte count, digest, output read-back, and MediaStore publication before tombstoning the encrypted entry. Conflict naming avoids silent overwrite. | Static ordering checks and compilation. Provider semantics, crash injection, read-back, and partial-output cleanup are unverified on Android. Unresolved output is retained as `RESTORE_RECOVERY_REQUIRED`; both copies remain. |
+| Delete/export | Explicit plaintext export warns and leaves encrypted item intact. Encrypted delete is user-confirmed and uses a tombstone/recovery step. | Compiled/static review only. Export providers and deletion failures are not device-tested. |
+| Authentication state | PIN hash uses PBKDF2-HMAC-SHA256 with a random salt; encrypted state is atomically replaced. A corrupt/unreadable state fails closed instead of silently resetting setup and potentially bypassing the old vault. Lockout state is persisted. | Crypto assertions plus Kotlin compile. No Android Keystore invalidation or on-device lockout test. |
+| Biometrics and access gate | Framework biometric/fingerprint APIs gate the protected UI, with PIN fallback. Vault list/viewer routes require the in-process unlocked state. | Kotlin compile/static inspection. Not tested with biometric hardware or lifecycle/process death. The biometric prompt is an app-level gate, not per-file cryptographic key authorization. |
+| Permissions and privacy | Media read permissions are optional; SAF is used for user-selected files/folders; no `MANAGE_EXTERNAL_STORAGE` or `INTERNET` permission is declared. APKs are treated as files and not installed/executed by Compass. | Manifest/package inspection. Runtime permission behavior is unverified. |
+| Cache and capture | `FLAG_SECURE`; decrypted playback/thumbnail temp files and RAM thumbnail caches have best-effort cleanup on lock/startup. | Source inspection and compile. OEM capture behavior and flash-storage erasure are not guaranteed. |
+| Signing | Release builds require owner-controlled external signing values; historical signing material is exposed and not reused. | A separate sideload-test APK is signed with a one-off temporary key and verified; it is not an owner/release signature. |
 
-## Checks actually run
+## Checks completed
 
-- `tools/run-selftest.sh`: **23/23 crypto checks passed** and **27/27
-  startup/transaction-order checks passed**.
-- Kotlin source compilation against the available API 34 `android.jar`:
-  **0 errors**, with framework deprecation/redundancy warnings.
-- Offline resource/link/dex/package build completed as an **unsigned** APK.
-- `aapt2` reports package `com.compass.vault`, version `0.2`, code `3`, min
-  SDK `26`, target SDK `35`; expected modern media permissions are present.
-- Python ZIP integrity check passed; no `INTERNET` permission or searched
-  `INTERNET` DEX string was found.
-- The offline APK SHA-256 and build/toolchain caveats are recorded in
-  [`VERIFICATION.md`](VERIFICATION.md).
+- `tools/run-selftest.sh`: **23/23** crypto assertions and **33/33** static
+  startup/transaction assertions passed.
+- Offline Kotlin/resource/dex/package build completed with **zero Kotlin
+  compilation errors** using Kotlin 2.0.21 and Android API 34 stubs.
+- D8 completed but emitted Kotlin metadata parse/rewrite warnings; the offline
+  Android platform is API 34 while Gradle declares compile SDK 35.
+- APK package inspection passed ZIP integrity and confirmed version `2.4`,
+  code `24`, min SDK `26`, target SDK `35`, and no manifest `INTERNET`
+  permission. The default offline output is unsigned. A separate session-local,
+  Git-ignored APK was signed with a disposable test key; `apksigner` verified
+  its v2/v3 signatures. It is not committed or hosted on GitHub.
+- No official Gradle build, emulator/device run, `adb` test, runtime
+  permission test, or Android provider transaction test has been performed.
+  The test signing key was deleted; no owner-controlled release signature was
+  created.
 
-The offline compiler/runtime tool versions are not the project's configured
-Gradle tool versions; D8 emitted Kotlin metadata warnings. No normal Gradle
-release build, `apksigner` verification, device install, emulator run, or
-runtime SAF/MediaStore/biometric test has been performed.
+## Data-safety boundaries
 
-## Data-safety decisions and limitations
+- Compass does not remove a source unless an encrypted copy has been verified
+  and the Android/provider removal is subsequently confirmed.
+- An `empty` MediaStore query is not proof of source removal, especially with
+  partial/revoked grants.
+- When restore output cannot be verified/cleaned, the encrypted copy remains
+  and the item is flagged for recovery. This may leave a partial or complete
+  public destination that needs user review.
+- The app cannot remove copies in gallery trash, cloud sync, backups, other
+  folders, or other applications; “private-only” refers only to the specific
+  source URI Compass verified.
+- A biometric prompt does not cryptographically authorize each AES operation.
+  A compromised process/device can bypass an app-level UI gate.
+- Flash wear-leveling prevents a guarantee of physical secure deletion. The
+  vault's primary at-rest protection is encryption; plaintext may exist in a
+  private playback cache while in use.
+- Clearing app data/uninstalling or losing the Keystore key can make protected
+  files unrecoverable. The vault is not a backup.
 
-- An encrypted copy is not treated as safe to delete a source until a
-  decrypt-and-digest verification succeeds.
-- A public source is not reported fully hidden unless Android/provider
-  removal is confirmed. Android gallery trash, cloud sync, copied files,
-  alternate URIs, and other copies are outside Compass's control.
-- When Android permission scoping makes an empty query ambiguous, the vault
-  retains the conservative public/unknown status rather than inferring a
-  deletion.
-- A restore output must be readable and match its expected size/digest before
-  the encrypted copy is deleted. Provider behavior and partial-file cleanup
-  still require device testing.
-- Android Keystore protects the master key but the current biometric prompt
-  is an app-level authentication gate; it does not cryptographically bind
-  every cipher operation to biometric approval.
-- Best-effort random overwrite on flash storage is not a guaranteed physical
-  erasure because of wear-leveling. The primary at-rest protection is
-  encryption; private playback files are plaintext while in use.
+## Existing release state
 
-## Existing release and signing incident
+GitHub currently lists **COMPASS 0.2** at tag `v0.2` as Latest, with an APK
+and checksum asset attached. This branch has not created or published
+**Compass 2.4**. The `v0.2` artifact remains separate and unchanged. Its
+signing material is exposed in repository history and must not be reused.
 
-The GitHub release titled **COMPASS 0.2**, tag `v0.2`, remains published and
-Latest. The tag and APK bytes are unchanged. The release notes were updated
-to add a direct tagged-APK download link and replace the obsolete keystore
-warning. An attempt to upload the APK and checksum as release assets failed
-because the sandbox connection to `uploads.github.com` returned EOF; a follow-up
-GitHub API query confirms the release still has no attached assets. The prior
-signing key and password file were tracked in repository history and must be
-treated as exposed. They were removed from this working tree; do not reuse that
-identity for new builds. The existing APK's ZIP integrity, SHA-256, and v1/v2/v3
-signature verification were checked locally. Any future update needs a
-separately approved signing and versioning plan; an unrelated key cannot update
-an installed copy.
-
-## Research notes
-
-Platform storage and biometric references, plus comparator projects, are
-summarized in [`RESEARCH.md`](RESEARCH.md). No third-party project code was
-copied.
+No Android code or documentation in this audit should be read as a substitute
+for the manual test plan in [VERIFICATION.md](VERIFICATION.md) or as a claim
+that the Compass 2.4 candidate is ready for valuable files or release.

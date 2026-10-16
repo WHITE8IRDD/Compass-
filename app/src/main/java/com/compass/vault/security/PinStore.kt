@@ -2,198 +2,170 @@ package com.compass.vault.security
 
 import android.content.Context
 import android.util.Base64
+import com.compass.vault.data.AtomicFileWriter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 
 /**
- * Stores the owner's PIN **only as a salted hash**, plus the brute-force
- * bookkeeping.
- *
- * The state file itself is encrypted with the Keystore key, so even a
- * forensic dump of the app's data directory yields nothing usable: the salt
- * and the hash live inside a GCM-authenticated blob that only this install
- * (and this device) can open.
- *
- * The PIN is never written to disk, never logged and never stored in
- * SharedPreferences in plain form.
+ * Stores a salted PIN hash, never the PIN itself, plus local lockout/settings
+ * state. The entire state is encrypted with the Android Keystore key and
+ * atomically replaced so a crash cannot turn a configured vault into a fresh
+ * setup screen.
  */
 class PinStore(context: Context, private val cipher: KeystoreCipher) {
 
     companion object {
         private const val ITERATIONS = PinHasher.ITERATIONS
-
-        /** Wrong attempts allowed before the escalating lock-out kicks in. */
         private const val FREE_ATTEMPTS = 5
-
-        /** First lock-out delay in milliseconds. */
         private const val BASE_LOCKOUT_MS = 5_000L
-
-        /** Each additional failure multiplies the delay by this factor. */
         private const val LOCKOUT_GROWTH = 3L
-
-        /** Upper bound for a single lock-out. */
         private const val MAX_LOCKOUT_MS = 15 * 60 * 1000L
-
-        /** After this many failures the app starts showing a decoy vault. */
         private const val DECOY_THRESHOLD = 10
-
         private const val FILE_NAME = ".authstate"
+        private const val STATE_ERROR = "PIN security state is unreadable or could not be saved. Vault data was preserved; do not reinstall or clear app data."
     }
 
     private val file = File(context.filesDir, FILE_NAME)
     private val mutex = Mutex()
 
     private data class State(
-        var salt: ByteArray = ByteArray(0),
-        var hash: ByteArray = ByteArray(0),
-        var iterations: Int = ITERATIONS,
-        var failures: Int = 0,
-        var lockedUntil: Long = 0L,
-        var setupDone: Boolean = false,
-        var secretBearing: Float = 90f,
-        var bearingEnabled: Boolean = true,
-        var biometricEnabled: Boolean = false,
-        var decoyEnabled: Boolean = true,
-        var graceSeconds: Int = 30,
-        var hintUses: Int = 0
+        val salt: ByteArray = ByteArray(0),
+        val hash: ByteArray = ByteArray(0),
+        val iterations: Int = ITERATIONS,
+        val failures: Int = 0,
+        val lockedUntil: Long = 0L,
+        val setupDone: Boolean = false,
+        val secretBearing: Float = 90f,
+        val bearingEnabled: Boolean = true,
+        val biometricEnabled: Boolean = false,
+        val decoyEnabled: Boolean = true,
+        val graceSeconds: Int = 30,
+        val hintUses: Int = 0
     )
 
-    private var state: State = State()
+    @Volatile private var state: State = State()
+    @Volatile private var loadError: Exception? = null
 
     init {
-        synchronized(this) { state = read() }
+        state = read()
     }
 
-    // -----------------------------------------------------------------------
-    // Public API
-    // -----------------------------------------------------------------------
-
-    fun isSetupDone(): Boolean = state.setupDone
-
+    fun isSetupDone(): Boolean = loadError != null || state.setupDone
+    fun hasSecurityStateError(): Boolean = loadError != null
     fun secretBearing(): Float = state.secretBearing
-
-    fun setSecretBearing(bearing: Float) {
-        state.secretBearing = ((bearing % 360f) + 360f) % 360f
-        persist()
-    }
-
     fun isBearingEnabled(): Boolean = state.bearingEnabled
-
-    fun setBearingEnabled(enabled: Boolean) {
-        state.bearingEnabled = enabled
-        persist()
-    }
-
     fun isBiometricEnabled(): Boolean = state.biometricEnabled
-
-    fun setBiometricEnabled(enabled: Boolean) {
-        state.biometricEnabled = enabled
-        persist()
-    }
-
     fun isDecoyEnabled(): Boolean = state.decoyEnabled
-
-    fun setDecoyEnabled(enabled: Boolean) {
-        state.decoyEnabled = enabled
-        persist()
-    }
-
     fun graceSeconds(): Int = state.graceSeconds
 
-    fun setGraceSeconds(seconds: Int) {
-        state.graceSeconds = seconds.coerceIn(0, 600)
-        persist()
+    fun setSecretBearing(bearing: Float): Boolean = updateState {
+        it.copy(secretBearing = ((bearing % 360f) + 360f) % 360f)
     }
+
+    fun setCompassUnlock(bearing: Float, enabled: Boolean): Boolean = updateState {
+        it.copy(
+            secretBearing = ((bearing % 360f) + 360f) % 360f,
+            bearingEnabled = enabled
+        )
+    }
+
+    fun setBearingEnabled(enabled: Boolean): Boolean = updateState { it.copy(bearingEnabled = enabled) }
+    fun setBiometricEnabled(enabled: Boolean): Boolean = updateState { it.copy(biometricEnabled = enabled) }
+    fun setDecoyEnabled(enabled: Boolean): Boolean = updateState { it.copy(decoyEnabled = enabled) }
+    fun setGraceSeconds(seconds: Int): Boolean = updateState { it.copy(graceSeconds = seconds.coerceIn(0, 600)) }
 
     /** Milliseconds left of the current lock-out, 0 when the app is usable. */
     fun lockoutRemainingMs(now: Long = System.currentTimeMillis()): Long =
         (state.lockedUntil - now).coerceAtLeast(0L)
 
-    /** True when the decoy vault should be shown instead of the real one. */
-    fun isDecoyActive(): Boolean =
-        state.decoyEnabled && state.failures >= DECOY_THRESHOLD
+    /** True when the decoy route should be shown instead of the keypad. */
+    fun isDecoyActive(): Boolean = state.decoyEnabled && state.failures >= DECOY_THRESHOLD
 
-    /**
-     * The little hint on the compass screen ("hold the needle on your mark")
-     * is only shown for the first few launches after the setup, so that the
-     * disguise gets better every day.
-     *
-     * @return true when the hint should be visible this time.
-     */
+    /** The optional compass hint is consumed only if the update is persisted. */
     fun consumeUnlockHint(): Boolean {
-        val show = state.hintUses < 3
-        if (show) {
-            state.hintUses += 1
-            persist()
-        }
-        return show
+        val current = state
+        if (current.hintUses >= 3 || loadError != null) return false
+        return persist(current.copy(hintUses = current.hintUses + 1))
     }
 
-    /**
-     * Creates (or replaces) the PIN.
-     * @return true when the new PIN was stored.
-     */
-    suspend fun setPin(pin: String): Boolean = withContext(Dispatchers.Default) {
-        if (!isValidPin(pin)) return@withContext false
+    /** Creates or replaces the PIN. Returns false if validation or durable save fails. */
+    suspend fun setPin(
+        pin: String,
+        initialBearing: Float? = null,
+        bearingEnabled: Boolean? = null,
+        biometricEnabled: Boolean? = null
+    ): Boolean = withContext(Dispatchers.Default) {
+        if (loadError != null || !isValidPin(pin)) return@withContext false
         mutex.withLock {
+            if (loadError != null) return@withLock false
             val salt = PinHasher.newSalt()
             val hash = PinHasher.derive(pin, salt, ITERATIONS)
-            state.salt = salt
-            state.hash = hash
-            state.iterations = ITERATIONS
-            state.failures = 0
-            state.lockedUntil = 0L
-            state.setupDone = true
-            persist()
+            val normalizedBearing = initialBearing?.let { ((it % 360f) + 360f) % 360f }
+            val next = state.copy(
+                salt = salt,
+                hash = hash,
+                iterations = ITERATIONS,
+                failures = 0,
+                lockedUntil = 0L,
+                setupDone = true,
+                secretBearing = normalizedBearing ?: state.secretBearing,
+                bearingEnabled = bearingEnabled ?: state.bearingEnabled,
+                biometricEnabled = biometricEnabled ?: state.biometricEnabled
+            )
+            persist(next).also { saved -> if (!saved) SecureWipe.wipe(hash) }
         }
-        true
     }
 
-    /**
-     * Verifies a PIN attempt.
-     *
-     * @return [VerifyResult]
-     */
+    /** Verify a PIN; failures are only reported after lockout state is durably saved. */
     suspend fun verify(pin: String): VerifyResult = withContext(Dispatchers.Default) {
         mutex.withLock {
-            if (state.hash.isEmpty()) return@withLock VerifyResult.NotConfigured
-            if (lockoutRemainingMs() > 0L) {
-                return@withLock VerifyResult.LockedOut(lockoutRemainingMs())
+            if (loadError != null) return@withLock VerifyResult.StorageError(STATE_ERROR)
+            val current = state
+            if (current.hash.isEmpty() || !current.setupDone) return@withLock VerifyResult.NotConfigured
+            val remaining = (current.lockedUntil - System.currentTimeMillis()).coerceAtLeast(0L)
+            if (remaining > 0L) return@withLock VerifyResult.LockedOut(remaining)
+
+            val candidate = try {
+                PinHasher.derive(pin, current.salt, current.iterations)
+            } catch (_: Exception) {
+                return@withLock VerifyResult.StorageError(STATE_ERROR)
+            }
+            val matches = try {
+                PinHasher.constantTimeEquals(candidate, current.hash)
+            } finally {
+                SecureWipe.wipe(candidate)
             }
 
-            val candidate = PinHasher.derive(pin, state.salt, state.iterations)
-            // Constant time comparison - avoids leaking how many leading
-            // bytes matched through timing.
-            val ok = PinHasher.constantTimeEquals(candidate, state.hash)
-            SecureWipe.wipe(candidate)
-
-            if (ok) {
-                state.failures = 0
-                state.lockedUntil = 0L
-                persist()
-                VerifyResult.Ok
-            } else {
-                state.failures += 1
-                val delay = lockoutDelayFor(state.failures)
-                if (state.failures > FREE_ATTEMPTS) {
-                    state.lockedUntil = System.currentTimeMillis() + delay
+            if (matches) {
+                if (!persist(current.copy(failures = 0, lockedUntil = 0L))) {
+                    VerifyResult.StorageError(STATE_ERROR)
+                } else {
+                    VerifyResult.Ok
                 }
-                persist()
-                VerifyResult.Wrong(state.failures, delay.takeIf { state.failures > FREE_ATTEMPTS } ?: 0L)
+            } else {
+                val failures = current.failures + 1
+                val delay = lockoutDelayFor(failures)
+                val lockedUntil = if (failures > FREE_ATTEMPTS) System.currentTimeMillis() + delay else 0L
+                if (!persist(current.copy(failures = failures, lockedUntil = lockedUntil))) {
+                    VerifyResult.StorageError(STATE_ERROR)
+                } else {
+                    VerifyResult.Wrong(failures, delay.takeIf { failures > FREE_ATTEMPTS } ?: 0L)
+                }
             }
         }
     }
 
-    /** True when the PIN is well formed (4-8 digits). */
     fun isValidPin(pin: String): Boolean = PinHasher.isValidPin(pin)
 
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
+    private fun updateState(transform: (State) -> State): Boolean = synchronized(this) {
+        if (loadError != null) return@synchronized false
+        persist(transform(state))
+    }
 
     private fun lockoutDelayFor(failures: Int): Long {
         if (failures <= FREE_ATTEMPTS) return 0L
@@ -204,73 +176,76 @@ class PinStore(context: Context, private val cipher: KeystoreCipher) {
 
     private fun read(): State {
         if (!file.exists()) return State()
+        val clear = try {
+            cipher.decryptBytes(file.readBytes())
+        } catch (error: Exception) {
+            loadError = error
+            return State(setupDone = true)
+        }
         return try {
-            val json = JSONObject(String(cipher.decryptBytes(file.readBytes()), Charsets.UTF_8))
-            State(
+            val json = JSONObject(String(clear, Charsets.UTF_8))
+            val loaded = State(
                 salt = Base64.decode(json.optString("salt"), Base64.NO_WRAP),
                 hash = Base64.decode(json.optString("hash"), Base64.NO_WRAP),
                 iterations = json.optInt("iterations", ITERATIONS),
-                failures = json.optInt("failures", 0),
-                lockedUntil = json.optLong("lockedUntil", 0L),
+                failures = json.optInt("failures", 0).coerceAtLeast(0),
+                lockedUntil = json.optLong("lockedUntil", 0L).coerceAtLeast(0L),
                 setupDone = json.optBoolean("setupDone", false),
-                secretBearing = json.optDouble("secretBearing", 90.0).toFloat(),
+                secretBearing = json.optDouble("secretBearing", 90.0).toFloat().let { ((it % 360f) + 360f) % 360f },
                 bearingEnabled = json.optBoolean("bearingEnabled", true),
                 biometricEnabled = json.optBoolean("biometricEnabled", false),
                 decoyEnabled = json.optBoolean("decoyEnabled", true),
-                graceSeconds = json.optInt("graceSeconds", 30),
-                hintUses = json.optInt("hintUses", 0)
+                graceSeconds = json.optInt("graceSeconds", 30).coerceIn(0, 600),
+                hintUses = json.optInt("hintUses", 0).coerceAtLeast(0)
             )
-        } catch (e: Exception) {
-            // Corrupt or unreadable state (e.g. the Keystore key was lost).
-            // Start over rather than crash: the owner will have to re-create
-            // the PIN, and the old encrypted files become unreadable anyway.
-            State()
+            if (loaded.setupDone && (loaded.salt.size != 16 || loaded.hash.size != 32 || loaded.iterations !in 10_000..1_000_000)) {
+                throw IOException("Invalid authenticated PIN state")
+            }
+            loaded
+        } catch (error: Exception) {
+            // Do not reset to setup: that would let someone overwrite the PIN
+            // state while leaving an existing encrypted vault behind.
+            loadError = error
+            State(setupDone = true)
+        } finally {
+            SecureWipe.wipe(clear)
         }
     }
 
-    private fun persist() {
-        synchronized(this) {
-            val json = JSONObject().apply {
-                put("salt", Base64.encodeToString(state.salt, Base64.NO_WRAP))
-                put("hash", Base64.encodeToString(state.hash, Base64.NO_WRAP))
-                put("iterations", state.iterations)
-                put("failures", state.failures)
-                put("lockedUntil", state.lockedUntil)
-                put("setupDone", state.setupDone)
-                put("secretBearing", state.secretBearing.toDouble())
-                put("bearingEnabled", state.bearingEnabled)
-                put("biometricEnabled", state.biometricEnabled)
-                put("decoyEnabled", state.decoyEnabled)
-                put("graceSeconds", state.graceSeconds)
-                put("hintUses", state.hintUses)
-            }
-            try {
-                val tmp = File(file.parentFile, "$FILE_NAME.tmp")
-                tmp.writeBytes(cipher.encryptBytes(json.toString().toByteArray(Charsets.UTF_8)))
-                if (file.exists()) file.delete()
-                tmp.renameTo(file)
-            } catch (e: Exception) {
-                // Nothing sensible to do here; the state simply stays as it was.
-            }
+    /** AtomicFileWriter preserves the last valid state if an update fails. */
+    private fun persist(next: State): Boolean = synchronized(this) {
+        if (loadError != null) return@synchronized false
+        val json = JSONObject().apply {
+            put("salt", Base64.encodeToString(next.salt, Base64.NO_WRAP))
+            put("hash", Base64.encodeToString(next.hash, Base64.NO_WRAP))
+            put("iterations", next.iterations)
+            put("failures", next.failures)
+            put("lockedUntil", next.lockedUntil)
+            put("setupDone", next.setupDone)
+            put("secretBearing", next.secretBearing.toDouble())
+            put("bearingEnabled", next.bearingEnabled)
+            put("biometricEnabled", next.biometricEnabled)
+            put("decoyEnabled", next.decoyEnabled)
+            put("graceSeconds", next.graceSeconds)
+            put("hintUses", next.hintUses)
+        }
+        val clear = json.toString().toByteArray(Charsets.UTF_8)
+        try {
+            AtomicFileWriter.write(file) { output -> output.write(cipher.encryptBytes(clear)) }
+            state = next
+            true
+        } catch (_: Exception) {
+            false
+        } finally {
+            SecureWipe.wipe(clear)
         }
     }
 
-    /** Outcome of a PIN attempt. */
     sealed class VerifyResult {
-        /** PIN correct. */
         object Ok : VerifyResult()
-
-        /** No PIN has been configured yet. */
         object NotConfigured : VerifyResult()
-
-        /**
-         * PIN wrong.
-         * @param failures total number of consecutive failures
-         * @param lockoutMs how long the app is now blocked (0 = not blocked)
-         */
         data class Wrong(val failures: Int, val lockoutMs: Long) : VerifyResult()
-
-        /** The app is currently blocked because of too many failures. */
         data class LockedOut(val remainingMs: Long) : VerifyResult()
+        data class StorageError(val message: String) : VerifyResult()
     }
 }

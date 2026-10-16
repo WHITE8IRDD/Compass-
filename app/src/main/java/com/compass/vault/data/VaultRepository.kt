@@ -81,14 +81,11 @@ class VaultRepository(
     init {
         if (!vaultDir.exists() && !vaultDir.mkdirs()) throw IOException("Could not create private vault storage")
         if (!tempDir.exists() && !tempDir.mkdirs()) throw IOException("Could not create private playback storage")
-        // Clear stale plaintext and interrupted transaction artifacts from a
-        // prior process run. A .part is never eligible for source removal; the
-        // original remains until import has fully verified and published.
+        // Plaintext playback files are disposable and must not survive a
+        // process restart. Vault transaction artifacts are recovered under
+        // mutationMutex when list() runs, rather than racing the first scan.
         cleanupScope.launch {
             tempDir.listFiles()?.forEach { SecureWipe.wipe(it) }
-            vaultDir.listFiles()
-                ?.filter { it.name.endsWith(".part") || it.name.endsWith(".tmp") }
-                ?.forEach { SecureWipe.wipe(it) }
         }
     }
 
@@ -187,32 +184,65 @@ class VaultRepository(
                     size = copied,
                     createdAt = System.currentTimeMillis(),
                     folder = folder,
-                    durationMs = origin?.durationMs ?: probeDuration(source),
+                    durationMs = origin?.durationMs ?: if (kindFor(mime, displayName) in setOf(VaultFile.Kind.VIDEO, VaultFile.Kind.AUDIO)) probeDuration(source) else 0L,
                     kind = origin?.kind ?: kindFor(mime, displayName),
                     originUri = source.toString(),
                     originVolume = origin?.volumeName,
                     originRelativePath = origin?.relativePath,
                     originDateTakenMs = origin?.dateTakenMs ?: 0L,
                     contentSha256 = originalDigest.toHex(),
-                    sourceState = VaultFile.SourceState.PUBLIC_COPY_PRESENT
+                    sourceState = VaultFile.SourceState.PUBLIC_COPY_PRESENT,
+                    originTreeUri = origin?.treeUri,
+                    originParentDocumentId = origin?.parentDocumentId
                 )
                 writeMetadata(file)
                 metadataWritten = true
                 file
             } catch (error: Throwable) {
-                SecureWipe.wipe(partial)
-                if (published && !metadataWritten) SecureWipe.wipe(payload)
+                // These are ciphertext-only artifacts; unlinking is safer and
+                // substantially faster than overwriting a multi-gigabyte file.
+                partial.delete()
+                if (published && !metadataWritten) payload.delete()
                 throw error
             }
+        }
+    }
+
+    /** Persist a durable removal intent before showing Android's consent UI. */
+    suspend fun markSourceRemovalPending(file: VaultFile): VaultFile = withContext(Dispatchers.IO) {
+        mutationMutex.withLock {
+            val current = readEntry(file.id) ?: throw IOException("Vault entry is missing")
+            if (current.sourceState == VaultFile.SourceState.PRIVATE_ONLY) {
+                throw IOException("Android already confirmed removal of the public source")
+            }
+            if (current.operationState !in setOf(
+                    VaultFile.OperationState.READY,
+                    VaultFile.OperationState.SOURCE_REMOVAL_PENDING
+                )
+            ) throw IOException("Another vault operation is pending for this item")
+            val source = current.originUri?.let(Uri::parse)
+                ?: throw IOException("The public source location is unavailable; the source was not removed")
+            if (sourceContentMatches(current, source, currentCoroutineContext()) != true) {
+                throw IOException("The public source changed or could not be verified; it was not removed")
+            }
+            val updated = current.copy(operationState = VaultFile.OperationState.SOURCE_REMOVAL_PENDING)
+            writeMetadata(updated)
+            updated
         }
     }
 
     /** Persist the platform result only after its delete operation completed. */
     suspend fun markSourceRemoved(file: VaultFile, removed: Boolean): VaultFile = withContext(Dispatchers.IO) {
         mutationMutex.withLock {
-            val updated = file.copy(
+            val current = readEntry(file.id) ?: throw IOException("Vault entry is missing")
+            if (current.operationState != VaultFile.OperationState.SOURCE_REMOVAL_PENDING) {
+                throw IOException("The source-removal transaction is not pending")
+            }
+            val updated = current.copy(
                 sourceState = if (removed) VaultFile.SourceState.PRIVATE_ONLY
-                else VaultFile.SourceState.PUBLIC_COPY_PRESENT
+                else VaultFile.SourceState.PUBLIC_COPY_PRESENT,
+                operationState = VaultFile.OperationState.READY,
+                pendingDestinationUri = null
             )
             writeMetadata(updated)
             updated
@@ -223,31 +253,12 @@ class VaultRepository(
     // Listing and folders
     // -----------------------------------------------------------------------
 
-    /** All encrypted entries, newest first. Corruption is surfaced, never shown as an empty vault. */
+    /** All encrypted entries, newest first. Recovery is performed before the index is shown. */
     suspend fun list(): List<VaultFile> = withContext(Dispatchers.IO) {
-        val entries = vaultDir.listFiles()
-            ?: throw IOException("Could not scan the private vault directory")
-        val sidecars = entries.filter { it.name.endsWith(META_SUFFIX) }
-        val sidecarIds = sidecars.mapTo(HashSet()) { it.name.removeSuffix(META_SUFFIX) }
-        val orphanedPayload = entries.firstOrNull { it.name.endsWith(PAYLOAD_SUFFIX) && it.name.removeSuffix(PAYLOAD_SUFFIX) !in sidecarIds }
-        if (orphanedPayload != null) {
-            throw IOException("An encrypted payload has no readable metadata. No vault data was changed.")
+        mutationMutex.withLock {
+            recoverTransactionsLocked()
+            readEntriesLocked(allowDeletePendingWithoutPayload = false).sortedByDescending { it.createdAt }
         }
-
-        val files = ArrayList<VaultFile>(sidecars.size)
-        for (sidecar in sidecars) {
-            val id = sidecar.name.removeSuffix(META_SUFFIX)
-            try {
-                UUID.fromString(id)
-                val payload = File(vaultDir, id + PAYLOAD_SUFFIX)
-                if (!payload.isFile) throw IOException("Encrypted payload is missing")
-                val json = JSONObject(String(cipher.decryptBytes(sidecar.readBytes()), Charsets.UTF_8))
-                files += VaultFile.fromJson(id, json)
-            } catch (error: Exception) {
-                throw IOException("Vault entry metadata could not be verified. Encrypted data was preserved.", error)
-            }
-        }
-        files.sortedByDescending { it.createdAt }
     }
 
     suspend fun folders(): List<String> = withContext(Dispatchers.IO) { readFolders() }
@@ -269,89 +280,65 @@ class VaultRepository(
     }
 
     suspend fun moveToFolder(file: VaultFile, folder: String?) = withContext(Dispatchers.IO) {
-        mutationMutex.withLock { writeMetadata(file.copy(folder = folder)) }
+        mutationMutex.withLock {
+            val current = readEntry(file.id) ?: throw IOException("Vault entry is missing")
+            if (current.operationState != VaultFile.OperationState.READY) {
+                throw IOException("A pending file operation must finish before moving this item")
+            }
+            writeMetadata(current.copy(folder = folder))
+        }
     }
 
     // -----------------------------------------------------------------------
     // Restore / export / delete
     // -----------------------------------------------------------------------
 
-    /**
-     * Restore a media entry to its recorded MediaStore volume and relative
-     * directory. Returns null when the original location is not reconstructible
-     * (for example a SAF document, old entry, or pre-Q device); the caller
-     * should then ask the user for a destination.
-     *
-     * The destination stays `IS_PENDING` until decryption, GCM verification,
-     * byte count, digest, and a read-back verification all succeed. The
-     * encrypted source is removed only after the public item is published.
-     */
+    /** Restore to the recorded location when it is safe and reconstructible. */
     suspend fun restoreToOriginalMedia(file: VaultFile, onProgress: (Long) -> Unit = {}): Uri? =
         withContext(Dispatchers.IO) {
             mutationMutex.withLock {
+                recoverTransactionsLocked()
+                val current = readEntry(file.id) ?: throw IOException("This file is no longer in the vault")
+                if (current.operationState != VaultFile.OperationState.READY) {
+                    throw IOException("A previous file operation needs attention before this item can be restored")
+                }
                 val transactionContext = currentCoroutineContext()
-                val originUri = file.originUri?.let(Uri::parse)
-                val originalMatches = originUri?.let { sourceContentMatches(file, it, transactionContext) }
+                val originUri = current.originUri?.let(Uri::parse)
+                val originalMatches = originUri?.let { sourceContentMatches(current, it, transactionContext) }
                 if (originUri != null && originalMatches == true) {
-                    deleteInternal(file)
+                    val published = current.copy(
+                        operationState = VaultFile.OperationState.RESTORE_PUBLISHED,
+                        pendingDestinationUri = originUri.toString()
+                    )
+                    writeMetadata(published)
+                    deleteInternal(published)
                     return@withLock originUri
                 }
-                // If the source was never confirmed removed, its absence or
-                // changed contents cannot be inferred safely from a scoped
-                // MediaStore query. Ask the user for a restore destination.
-                if (file.sourceState == VaultFile.SourceState.PUBLIC_COPY_PRESENT) {
-                    return@withLock null
+
+                // Do not make a second public copy while the original may still
+                // exist or its removal status is ambiguous. The caller offers
+                // a user-selected, conflict-safe destination instead.
+                if (current.sourceState != VaultFile.SourceState.PRIVATE_ONLY) return@withLock null
+
+                if (!current.originTreeUri.isNullOrBlank() && !current.originParentDocumentId.isNullOrBlank()) {
+                    val restored = restoreToTreeFolder(current, onProgress, transactionContext)
+                    if (restored != null) return@withLock restored
                 }
 
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
-                    file.kind !in setOf(VaultFile.Kind.IMAGE, VaultFile.Kind.VIDEO, VaultFile.Kind.AUDIO) ||
-                    file.originRelativePath.isNullOrBlank()
+                    current.kind !in setOf(VaultFile.Kind.IMAGE, VaultFile.Kind.VIDEO, VaultFile.Kind.AUDIO) ||
+                    current.originVolume.isNullOrBlank() ||
+                    current.originRelativePath.isNullOrBlank()
                 ) return@withLock null
 
-                val volume = file.originVolume?.takeIf { it.isNotBlank() }
-                    ?: MediaStore.VOLUME_EXTERNAL_PRIMARY
-                val collection = mediaCollection(file.kind, volume) ?: return@withLock null
-                val path = file.originRelativePath
-                val name = uniqueDisplayName(volume, path, file.name)
-                val values = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-                    put(MediaStore.MediaColumns.MIME_TYPE, file.mimeType)
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, path)
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
-                    if (file.originDateTakenMs > 0L) {
-                        put(MediaStore.MediaColumns.DATE_TAKEN, file.originDateTakenMs)
-                    }
-                }
-                val target = try {
-                    resolver.insert(collection, values)
-                } catch (_: Exception) {
-                    null
-                } ?: return@withLock null
-
-                try {
-                    val digest = writeDecryptedAndVerify(file, target, onProgress, transactionContext)
-                    if (!verifyUriDigest(target, file.size, digest, transactionContext)) {
-                        throw IOException("Android could not verify the restored media")
-                    }
-                    val published = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-                    if (resolver.update(target, published, null, null) != 1) {
-                        throw IOException("Android could not publish the restored media")
-                    }
-                    if (!verifyUriDigest(target, file.size, digest, transactionContext)) {
-                        throw IOException("The restored media failed its final verification")
-                    }
-                    deleteInternal(file)
-                    target
-                } catch (error: Throwable) {
-                    deleteProviderItem(target)
-                    throw error
-                }
+                restoreToMediaStore(current, onProgress, transactionContext)
             }
         }
 
     /**
-     * Restore to a SAF-selected destination. A provider that cannot read back
-     * its output is treated as unverified and the encrypted original remains.
+     * Restore to a SAF-created document chosen by the user. The destination
+     * URI and transaction state are journaled before plaintext bytes are
+     * written. A failed or interrupted transfer never removes the vault copy.
      */
     suspend fun restoreToUri(
         file: VaultFile,
@@ -359,18 +346,212 @@ class VaultRepository(
         onProgress: (Long) -> Unit = {}
     ): Unit = withContext(Dispatchers.IO) {
         mutationMutex.withLock {
+            recoverTransactionsLocked()
+            val current = readEntry(file.id) ?: throw IOException("This file is no longer in the vault")
+            if (current.operationState != VaultFile.OperationState.READY) {
+                throw IOException("A previous file operation needs attention before this item can be restored")
+            }
             val transactionContext = currentCoroutineContext()
+            var destinationPublished = false
             try {
-                val digest = writeDecryptedAndVerify(file, target, onProgress, transactionContext)
-                if (!verifyUriDigest(target, file.size, digest, transactionContext)) {
+                writeMetadata(current.copy(
+                    operationState = VaultFile.OperationState.RESTORE_WRITING,
+                    pendingDestinationUri = target.toString()
+                ))
+                val digest = writeDecryptedAndVerify(current, target, onProgress, transactionContext)
+                if (!verifyUriDigest(target, current.size, digest, transactionContext)) {
                     throw IOException("The destination could not be read back for verification")
                 }
-                deleteInternal(file)
+                writeMetadata(current.copy(
+                    operationState = VaultFile.OperationState.RESTORE_PUBLISHED,
+                    pendingDestinationUri = target.toString()
+                ))
+                destinationPublished = true
+                deleteInternal(current.copy(
+                    operationState = VaultFile.OperationState.RESTORE_PUBLISHED,
+                    pendingDestinationUri = target.toString()
+                ))
+            } catch (cancelled: CancellationException) {
+                if (!destinationPublished) handleFailedRestore(current, target)
+                throw cancelled
             } catch (error: Throwable) {
-                deleteProviderItem(target)
+                if (!destinationPublished) handleFailedRestore(current, target)
+                else throw IOException("The restore was verified; vault cleanup will resume safely on the next open.", error)
                 throw error
             }
         }
+    }
+
+    private fun restoreToMediaStore(
+        file: VaultFile,
+        onProgress: (Long) -> Unit,
+        transactionContext: kotlin.coroutines.CoroutineContext
+    ): Uri? {
+        val volume = file.originVolume?.takeIf { it.isNotBlank() } ?: MediaStore.VOLUME_EXTERNAL_PRIMARY
+        val collection = mediaCollection(file.kind, volume) ?: return null
+        val path = file.originRelativePath ?: return null
+        val name = uniqueDisplayName(volume, path, file.name) ?: return null
+        writeMetadata(file.copy(
+            operationState = VaultFile.OperationState.RESTORE_PREPARING,
+            pendingDestinationUri = null,
+            pendingDestinationName = name
+        ))
+        var target: Uri? = null
+        var committed = false
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, file.mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, path)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+                if (file.originDateTakenMs > 0L) {
+                    put(MediaStore.MediaColumns.DATE_TAKEN, file.originDateTakenMs)
+                }
+            }
+            target = resolver.insert(collection, values)
+                ?: run {
+                    writeMetadata(file.copy(operationState = VaultFile.OperationState.READY, pendingDestinationName = null))
+                    return null
+                }
+            val writing = file.copy(
+                operationState = VaultFile.OperationState.RESTORE_WRITING,
+                pendingDestinationUri = target.toString(),
+                pendingDestinationName = name
+            )
+            writeMetadata(writing)
+            val digest = writeDecryptedAndVerify(file, target, onProgress, transactionContext)
+            if (!verifyUriDigest(target, file.size, digest, transactionContext)) {
+                throw IOException("Android could not verify the restored media")
+            }
+            val publishedValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            if (resolver.update(target, publishedValues, null, null) != 1) {
+                throw IOException("Android could not publish the restored media")
+            }
+            if (!verifyUriDigest(target, file.size, digest, transactionContext)) {
+                throw IOException("The restored media failed its final verification")
+            }
+            val published = writing.copy(operationState = VaultFile.OperationState.RESTORE_PUBLISHED)
+            writeMetadata(published)
+            committed = true
+            deleteInternal(published)
+            return target
+        } catch (cancelled: CancellationException) {
+            if (!committed) handleFailedRestore(file, target)
+            throw cancelled
+        } catch (error: Throwable) {
+            if (committed) {
+                throw IOException("The restore was verified; vault cleanup will resume safely on the next open.", error)
+            }
+            handleFailedRestore(file, target)
+            throw error
+        }
+    }
+
+    private fun restoreToTreeFolder(
+        file: VaultFile,
+        onProgress: (Long) -> Unit,
+        transactionContext: kotlin.coroutines.CoroutineContext
+    ): Uri? {
+        val tree = runCatching { Uri.parse(file.originTreeUri) }.getOrNull() ?: return null
+        val parentId = file.originParentDocumentId ?: return null
+        val safeName = uniqueDocumentName(tree, parentId, file.name) ?: return null
+        writeMetadata(file.copy(
+            operationState = VaultFile.OperationState.RESTORE_PREPARING,
+            pendingDestinationUri = null,
+            pendingDestinationName = safeName
+        ))
+        var target: Uri? = null
+        var committed = false
+        try {
+            val parent = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
+            target = try {
+                DocumentsContract.createDocument(resolver, parent, file.mimeType, safeName)
+            } catch (_: SecurityException) {
+                null
+            } catch (_: Exception) {
+                null
+            }
+            if (target == null) {
+                writeMetadata(file.copy(operationState = VaultFile.OperationState.READY, pendingDestinationName = null))
+                return null
+            }
+            val writing = file.copy(
+                operationState = VaultFile.OperationState.RESTORE_WRITING,
+                pendingDestinationUri = target.toString(),
+                pendingDestinationName = safeName
+            )
+            writeMetadata(writing)
+            val digest = writeDecryptedAndVerify(file, target, onProgress, transactionContext)
+            if (!verifyUriDigest(target, file.size, digest, transactionContext)) {
+                throw IOException("The original folder could not read back the restored file")
+            }
+            val published = writing.copy(operationState = VaultFile.OperationState.RESTORE_PUBLISHED)
+            writeMetadata(published)
+            committed = true
+            deleteInternal(published)
+            return target
+        } catch (cancelled: CancellationException) {
+            if (!committed) handleFailedRestore(file, target)
+            throw cancelled
+        } catch (error: Throwable) {
+            if (committed) {
+                throw IOException("The restore was verified; vault cleanup will resume safely on the next open.", error)
+            }
+            handleFailedRestore(file, target)
+            throw error
+        }
+    }
+
+    /** A conflicting SAF name is never overwritten; failure to inspect is fail-closed. */
+    private fun uniqueDocumentName(tree: Uri, parentId: String, requested: String): String? {
+        val children = try {
+            resolver.query(
+                DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId),
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null,
+                null,
+                null
+            ) ?: return null
+        } catch (_: Exception) {
+            return null
+        }
+        val names = HashSet<String>()
+        children.use { cursor ->
+            val index = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            if (index < 0) return null
+            while (cursor.moveToNext()) if (!cursor.isNull(index)) names += cursor.getString(index)
+        }
+        if (requested !in names) return requested
+        val dot = requested.lastIndexOf('.')
+        val base = if (dot > 0) requested.substring(0, dot) else requested
+        val extension = if (dot > 0) requested.substring(dot) else ""
+        for (number in 1..999) {
+            val candidate = "$base ($number)$extension"
+            if (candidate !in names) return candidate
+        }
+        return "$base (${System.currentTimeMillis()})$extension"
+    }
+
+    /** Preserve the encrypted entry unless a partial destination is confirmed removed. */
+    private fun handleFailedRestore(file: VaultFile, target: Uri?) {
+        if (target == null) {
+            runCatching {
+                writeMetadata(file.copy(
+                    operationState = VaultFile.OperationState.READY,
+                    pendingDestinationUri = null,
+                    pendingDestinationName = null
+                ))
+            }
+            return
+        }
+        val removed = deleteProviderItem(target) && providerConfirmsAbsent(target)
+        val updated = file.copy(
+            operationState = if (removed) VaultFile.OperationState.READY
+            else VaultFile.OperationState.RESTORE_RECOVERY_REQUIRED,
+            pendingDestinationUri = if (removed) null else target.toString(),
+            pendingDestinationName = file.pendingDestinationName
+        )
+        runCatching { writeMetadata(updated) }
     }
 
     /** Decrypts an explicit user-requested export; the protected original remains. */
@@ -390,13 +571,28 @@ class VaultRepository(
 
     /** Deletes an encrypted entry after a user-confirmed, irreversible action. */
     suspend fun delete(file: VaultFile) = withContext(Dispatchers.IO) {
-        mutationMutex.withLock { deleteInternal(file) }
+        mutationMutex.withLock {
+            val current = readEntry(file.id) ?: return@withLock
+            if (current.operationState != VaultFile.OperationState.READY) {
+                throw IOException("A pending file operation must be recovered before deletion")
+            }
+            deleteInternal(current.copy(pendingDestinationUri = null))
+        }
     }
 
+    /**
+     * Two-phase deletion: persist the tombstone first, then unlink ciphertext,
+     * then remove metadata. Ciphertext does not need a slow random overwrite;
+     * deleting the key is not part of this operation.
+     */
     private fun deleteInternal(file: VaultFile) {
+        val deleting = file.copy(operationState = VaultFile.OperationState.DELETE_PENDING)
+        writeMetadata(deleting)
+        val payload = File(vaultDir, file.id + PAYLOAD_SUFFIX)
+        if (payload.exists() && !payload.delete()) throw IOException("Could not finish removing the encrypted payload")
+        val metadata = File(vaultDir, file.id + META_SUFFIX)
+        if (metadata.exists() && !metadata.delete()) throw IOException("Could not finish updating the vault index")
         thumbnails.remove(file.id)
-        SecureWipe.wipe(File(vaultDir, file.id + PAYLOAD_SUFFIX))
-        SecureWipe.wipe(File(vaultDir, file.id + META_SUFFIX))
     }
 
     /** Decrypt to a unique app-private seekable file for video playback/thumbnailing. */
@@ -558,6 +754,183 @@ class VaultRepository(
     // Internal transaction helpers
     // -----------------------------------------------------------------------
 
+    /** Recover interrupted moves before exposing the vault list. */
+    private suspend fun recoverTransactionsLocked() {
+        val context = currentCoroutineContext()
+        vaultDir.listFiles()?.filter { it.name.endsWith(".part") || it.name.endsWith(".tmp") }
+            ?.forEach { it.delete() }
+        val entries = readEntriesLocked(allowDeletePendingWithoutPayload = true)
+        for (entry in entries) {
+            context.ensureActive()
+            try {
+                when (entry.operationState) {
+                    VaultFile.OperationState.DELETE_PENDING -> recoverDeletePending(entry)
+                    VaultFile.OperationState.RESTORE_PREPARING -> {
+                        // The destination URI is not known yet. No bytes were
+                        // eligible for writing, so keep the encrypted source
+                        // and permit a fresh, conflict-safe attempt.
+                        writeMetadata(entry.copy(
+                            operationState = VaultFile.OperationState.READY,
+                            pendingDestinationUri = null,
+                            pendingDestinationName = null
+                        ))
+                    }
+                    VaultFile.OperationState.RESTORE_WRITING,
+                    VaultFile.OperationState.RESTORE_PUBLISHED,
+                    VaultFile.OperationState.RESTORE_RECOVERY_REQUIRED -> recoverRestore(entry, context)
+                    VaultFile.OperationState.SOURCE_REMOVAL_PENDING -> {
+                        val source = entry.originUri?.let(Uri::parse)
+                        if (source != null && providerConfirmsAbsent(source)) {
+                            writeMetadata(entry.copy(
+                                sourceState = VaultFile.SourceState.PRIVATE_ONLY,
+                                operationState = VaultFile.OperationState.READY
+                            ))
+                        }
+                    }
+                    VaultFile.OperationState.READY -> Unit
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (entry.operationState in setOf(
+                        VaultFile.OperationState.RESTORE_WRITING,
+                        VaultFile.OperationState.RESTORE_PUBLISHED,
+                        VaultFile.OperationState.RESTORE_RECOVERY_REQUIRED
+                    )
+                ) {
+                    runCatching {
+                        writeMetadata(entry.copy(operationState = VaultFile.OperationState.RESTORE_RECOVERY_REQUIRED))
+                    }
+                } else if (entry.operationState == VaultFile.OperationState.DELETE_PENDING) {
+                    throw IOException("Vault cleanup is incomplete; protected data was preserved for retry.", error)
+                }
+            }
+        }
+        // The source is never deleted before import returns with its metadata
+        // committed. Therefore a bare .bin without a sidecar is an unindexed
+        // ciphertext temp from an interrupted pre-commit import or a completed
+        // tombstone cleanup and is safe to unlink (it is not the only valid copy).
+        readEntriesLocked(allowDeletePendingWithoutPayload = true)
+    }
+
+    private fun recoverDeletePending(file: VaultFile) {
+        val payload = payloadFor(file)
+        if (payload.exists() && !payload.delete()) {
+            throw IOException("Could not finish removing a previously committed vault entry")
+        }
+        val metadata = File(vaultDir, file.id + META_SUFFIX)
+        if (metadata.exists() && !metadata.delete()) {
+            throw IOException("Could not finish updating the vault index")
+        }
+        thumbnails.remove(file.id)
+    }
+
+    private fun recoverRestore(file: VaultFile, coroutineContext: kotlin.coroutines.CoroutineContext) {
+        val destination = file.pendingDestinationUri?.let(Uri::parse)
+        val expected = file.contentSha256?.hexToBytes()
+        if (destination != null && expected != null && payloadFor(file).isFile) {
+            val exactCopy = try {
+                verifyUriDigest(destination, file.size, expected, coroutineContext)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                false
+            }
+            if (exactCopy && makeMediaStoreVisible(destination)) {
+                val published = try {
+                    verifyUriDigest(destination, file.size, expected, coroutineContext)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    false
+                }
+                if (published) {
+                    try {
+                        deleteInternal(file.copy(operationState = VaultFile.OperationState.RESTORE_PUBLISHED))
+                    } catch (_: Exception) {
+                        // deleteInternal already persisted DELETE_PENDING; the
+                        // next listing retries that committed cleanup.
+                    }
+                    return
+                }
+            }
+        }
+
+        // The output is incomplete, inaccessible, or unverifiable. Attempt to
+        // remove only the URI created by this journaled operation. If the
+        // provider cannot prove removal, keep both sides and require review.
+        val removed = destination != null && deleteProviderItem(destination) && providerConfirmsAbsent(destination)
+        writeMetadata(file.copy(
+            operationState = if (removed) VaultFile.OperationState.READY
+            else VaultFile.OperationState.RESTORE_RECOVERY_REQUIRED,
+            pendingDestinationUri = if (removed) null else file.pendingDestinationUri,
+            pendingDestinationName = if (removed) null else file.pendingDestinationName
+        ))
+    }
+
+    private fun makeMediaStoreVisible(uri: Uri): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || uri.authority != "media") return true
+        return try {
+            val cursor = resolver.query(uri, arrayOf(MediaStore.MediaColumns.IS_PENDING), null, null, null)
+                ?: return false
+            val pending = cursor.use {
+                if (!it.moveToFirst()) return false
+                val index = it.getColumnIndex(MediaStore.MediaColumns.IS_PENDING)
+                index >= 0 && it.getInt(index) != 0
+            }
+            if (!pending) return true
+            val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            resolver.update(uri, values, null, null) == 1
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun readEntry(id: String): VaultFile? {
+        val sidecar = File(vaultDir, id + META_SUFFIX)
+        if (!sidecar.isFile) return null
+        try {
+            UUID.fromString(id)
+            val json = JSONObject(String(cipher.decryptBytes(sidecar.readBytes()), Charsets.UTF_8))
+            val entry = VaultFile.fromJson(id, json)
+            if (!payloadFor(entry).isFile && entry.operationState != VaultFile.OperationState.DELETE_PENDING) {
+                throw IOException("Encrypted payload is missing")
+            }
+            return entry
+        } catch (error: Exception) {
+            throw IOException("Vault entry metadata or payload could not be verified; data was preserved.", error)
+        }
+    }
+
+    private fun readEntriesLocked(allowDeletePendingWithoutPayload: Boolean): List<VaultFile> {
+        val entries = vaultDir.listFiles() ?: throw IOException("Could not scan the private vault directory")
+        val sidecars = entries.filter { it.name.endsWith(META_SUFFIX) }
+        val files = ArrayList<VaultFile>(sidecars.size)
+        for (sidecar in sidecars) {
+            val id = sidecar.name.removeSuffix(META_SUFFIX)
+            try {
+                UUID.fromString(id)
+                val json = JSONObject(String(cipher.decryptBytes(sidecar.readBytes()), Charsets.UTF_8))
+                val file = VaultFile.fromJson(id, json)
+                val payloadExists = payloadFor(file).isFile
+                if (!payloadExists && !(allowDeletePendingWithoutPayload &&
+                        file.operationState == VaultFile.OperationState.DELETE_PENDING)
+                ) throw IOException("Encrypted payload is missing")
+                files += file
+            } catch (error: Exception) {
+                throw IOException("Vault entry metadata could not be verified. Encrypted data was preserved.", error)
+            }
+        }
+        val sidecarIds = sidecars.mapTo(HashSet()) { it.name.removeSuffix(META_SUFFIX) }
+        entries.filter { it.name.endsWith(PAYLOAD_SUFFIX) && it.name.removeSuffix(PAYLOAD_SUFFIX) !in sidecarIds }
+            .forEach { orphan ->
+                if (orphan.exists() && !orphan.delete()) {
+                    throw IOException("An interrupted encrypted transaction could not be cleaned up; data was preserved.")
+                }
+            }
+        return files
+    }
+
     private fun writeMetadata(file: VaultFile) {
         val encrypted = cipher.encryptBytes(file.toJson().toString().toByteArray(Charsets.UTF_8))
         AtomicFileWriter.write(File(vaultDir, file.id + META_SUFFIX)) { out -> out.write(encrypted) }
@@ -662,47 +1035,75 @@ class VaultRepository(
         return digest.digest() to size
     }
 
-    private fun deleteProviderItem(uri: Uri) {
+    private fun deleteProviderItem(uri: Uri): Boolean = try {
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+            DocumentsContract.deleteDocument(resolver, uri)
+        } else {
+            resolver.delete(uri, null, null) > 0
+        }
+    } catch (_: Exception) {
+        false
+    }
+
+    /** A failed read proves absence only when the provider reports a missing document. */
+    private fun providerConfirmsAbsent(uri: Uri): Boolean {
         try {
-            if (DocumentsContract.isDocumentUri(context, uri)) {
-                DocumentsContract.deleteDocument(resolver, uri)
+            val column = if (DocumentsContract.isDocumentUri(context, uri)) {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID
             } else {
-                resolver.delete(uri, null, null)
+                MediaStore.MediaColumns._ID
             }
+            resolver.query(uri, arrayOf(column), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) return false
+            }
+        } catch (_: SecurityException) {
+            return false
         } catch (_: Exception) {
-            // The encrypted original remains authoritative; caller surfaces the failure.
+            // Some providers do not support query; verify by opening below.
+        }
+        return try {
+            val input = resolver.openInputStream(uri) ?: return false
+            input.close()
+            false
+        } catch (_: java.io.FileNotFoundException) {
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 
-    private fun uniqueDisplayName(volume: String, path: String, requested: String): String {
-        fun exists(name: String): Boolean = try {
+    /** Null means the provider could not be inspected safely; caller uses the save picker. */
+    private fun uniqueDisplayName(volume: String, path: String, requested: String): String? {
+        fun exists(name: String): Boolean? = try {
             resolver.query(
                 MediaStore.Files.getContentUri(volume),
                 arrayOf(MediaStore.MediaColumns._ID),
                 "${MediaStore.MediaColumns.RELATIVE_PATH}=? AND ${MediaStore.MediaColumns.DISPLAY_NAME}=?",
                 arrayOf(path, name),
                 null
-            )?.use { it.moveToFirst() } ?: false
+            )?.use { it.moveToFirst() }
         } catch (_: Exception) {
-            true // if we cannot inspect safely, do not risk overwriting a name
+            null
         }
 
-        if (!exists(requested)) return requested
+        val requestedExists = exists(requested) ?: return null
+        if (!requestedExists) return requested
         val dot = requested.lastIndexOf('.')
         val base = if (dot > 0) requested.substring(0, dot) else requested
         val extension = if (dot > 0) requested.substring(dot) else ""
         for (number in 1..999) {
             val candidate = "$base ($number)$extension"
-            if (!exists(candidate)) return candidate
+            val candidateExists = exists(candidate) ?: return null
+            if (!candidateExists) return candidate
         }
-        return "$base (${System.currentTimeMillis()})$extension"
+        return null
     }
 
     private fun mediaCollection(kind: VaultFile.Kind, volume: String): Uri? = when (kind) {
         VaultFile.Kind.IMAGE -> MediaStore.Images.Media.getContentUri(volume)
         VaultFile.Kind.VIDEO -> MediaStore.Video.Media.getContentUri(volume)
         VaultFile.Kind.AUDIO -> MediaStore.Audio.Media.getContentUri(volume)
-        VaultFile.Kind.DOCUMENT -> null
+        VaultFile.Kind.DOCUMENT, VaultFile.Kind.APK, VaultFile.Kind.OTHER -> null
     }
 
     private fun queryDisplayName(resolver: ContentResolver, uri: Uri): String? = try {
@@ -731,20 +1132,31 @@ class VaultRepository(
         "wav" -> "audio/wav"
         "pdf" -> "application/pdf"
         "txt" -> "text/plain"
-        "doc", "docx" -> "application/msword"
+        "md" -> "text/markdown"
+        "csv" -> "text/csv"
+        "doc" -> "application/msword"
+        "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        "xls" -> "application/vnd.ms-excel"
+        "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "ppt" -> "application/vnd.ms-powerpoint"
+        "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        "apk" -> "application/vnd.android.package-archive"
         "zip" -> "application/zip"
         else -> "application/octet-stream"
     }
 
     private fun kindFor(mime: String, name: String): VaultFile.Kind {
-        if (mime.startsWith("image/")) return VaultFile.Kind.IMAGE
-        if (mime.startsWith("video/")) return VaultFile.Kind.VIDEO
-        if (mime.startsWith("audio/")) return VaultFile.Kind.AUDIO
         val extension = name.substringAfterLast('.', "").lowercase()
-        if (extension in setOf("jpg", "jpeg", "png", "webp", "gif", "heic", "heif")) return VaultFile.Kind.IMAGE
-        if (extension in setOf("mp4", "mkv", "mov", "webm", "3gp", "avi")) return VaultFile.Kind.VIDEO
-        if (extension in setOf("mp3", "m4a", "aac", "ogg", "opus", "wav", "flac")) return VaultFile.Kind.AUDIO
-        return VaultFile.Kind.DOCUMENT
+        if (mime == "application/vnd.android.package-archive" || extension == "apk") return VaultFile.Kind.APK
+        if (mime.startsWith("image/") || extension in setOf("jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "bmp", "tif", "tiff")) return VaultFile.Kind.IMAGE
+        if (mime.startsWith("video/") || extension in setOf("mp4", "mkv", "mov", "webm", "3gp", "avi", "m4v", "mpeg", "mpg")) return VaultFile.Kind.VIDEO
+        if (mime.startsWith("audio/") || extension in setOf("mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "amr")) return VaultFile.Kind.AUDIO
+        if (mime.startsWith("text/") || extension in setOf(
+                "pdf", "txt", "md", "csv", "rtf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+                "odt", "ods", "odp", "epub", "html", "htm", "xml", "json"
+            )
+        ) return VaultFile.Kind.DOCUMENT
+        return VaultFile.Kind.OTHER
     }
 
     private fun probeDuration(source: Uri): Long = try {

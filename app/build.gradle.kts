@@ -24,8 +24,8 @@ android {
         applicationId = "com.compass.vault"
         minSdk = 26          // Android 8.0 Oreo
         targetSdk = 35       // Android 15
-        versionCode = 3
-        versionName = "0.2"
+        versionCode = 24
+        versionName = "2.4"
         resourceConfigurations += listOf("en")
     }
 

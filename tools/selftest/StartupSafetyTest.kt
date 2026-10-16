@@ -101,8 +101,29 @@ fun main() {
     val manifest = File(root, "app/src/main/AndroidManifest.xml")
     check("AndroidManifest.xml was found", manifest.isFile)
     if (manifest.isFile) {
-        check("the app does not request INTERNET permission", !Regex("<uses-permission[^>]*android.permission.INTERNET").containsMatchIn(manifest.readText()))
+        val manifestText = manifest.readText()
+        check("the app does not request INTERNET permission", !Regex("<uses-permission[^>]*android.permission.INTERNET").containsMatchIn(manifestText))
+        check("the app does not request broad all-files access", !manifestText.contains("MANAGE_EXTERNAL_STORAGE"))
     }
+
+    val mainActivityText = mainActivity?.readText().orEmpty()
+    val settingsRoute = mainActivityText.substringAfter("override fun showSettings()", "")
+        .substringBefore("override fun showViewer(")
+    check("security settings require the vault authentication gate",
+        settingsRoute.contains("if (!graph.lockController.isUnlocked)") &&
+            settingsRoute.contains("showPin(PinReason.SETTINGS_ACCESS)"))
+
+    val buildConfig = File(root, "app/build.gradle.kts")
+    check("the app version is Compass 2.4 / code 24",
+        buildConfig.isFile && buildConfig.readText().contains("versionName = \"2.4\"") &&
+            buildConfig.readText().contains("versionCode = 24"))
+
+    val pinStore = File(sourceRoot, "security/PinStore.kt")
+    val pinStoreText = if (pinStore.isFile) pinStore.readText() else ""
+    check("corrupt PIN state fails closed instead of resetting setup",
+        pinStoreText.contains("State(setupDone = true)") &&
+            pinStoreText.contains("VerifyResult.StorageError") &&
+            pinStoreText.contains("AtomicFileWriter.write(file)"))
 
     // --- 4. file protection must be transactional -------------------------
     val repository = File(sourceRoot, "data/VaultRepository.kt")
@@ -115,6 +136,11 @@ fun main() {
     val metadataIndex = importBody.indexOf("writeMetadata(file)")
     check("import verifies ciphertext before publishing metadata", verifyIndex >= 0 && verifyIndex < publishIndex && publishIndex < metadataIndex)
     check("repository import never deletes a public source", !importBody.contains("resolver.delete") && !importBody.contains("deleteDocument"))
+    val removalJournal = repositoryText.substringAfter("suspend fun markSourceRemovalPending(", "")
+        .substringBefore("suspend fun markSourceRemoved(")
+    check("source bytes are re-verified before the durable removal intent",
+        removalJournal.indexOf("sourceContentMatches(current, source") >= 0 &&
+            removalJournal.indexOf("sourceContentMatches(current, source") < removalJournal.indexOf("writeMetadata(updated)"))
 
     val vaultScreen = File(sourceRoot, "ui/screen/VaultScreen.kt")
     check("VaultScreen.kt was found", vaultScreen.isFile)
@@ -122,9 +148,11 @@ fun main() {
         val text = vaultScreen.readText()
         val importUris = text.substringAfter("private fun importUris(", "")
             .substringBefore("private fun lockMedia(")
-        check("batch flow asks Android to delete only after verified import returns",
-            importUris.indexOf("graph.repository.import(") >= 0 &&
-                importUris.indexOf("graph.repository.import(") < importUris.indexOf("requestRemoval(uri)"))
+        val newImport = importUris.lastIndexOf("graph.repository.import(")
+        val durableIntent = importUris.lastIndexOf("graph.repository.markSourceRemovalPending(")
+        val androidRemoval = importUris.lastIndexOf("requestRemoval(uri)")
+        check("batch flow journals source removal only after verified import returns",
+            newImport >= 0 && newImport < durableIntent && durableIntent < androidRemoval)
         val lockMedia = text.substringAfter("private fun lockMedia(", "")
             .substringBefore("private suspend fun requestRemoval(")
         check("All Media lock flow asks Android to delete only after import returns",
@@ -137,17 +165,33 @@ fun main() {
     }
 
     val restoreOriginal = repositoryText.substringAfter("suspend fun restoreToOriginalMedia(", "")
-        .substringBefore("/**\n     * Restore to a SAF-selected destination")
-    check("original restore verifies existing source before removing encrypted copy",
-        restoreOriginal.indexOf("sourceContentMatches(file, it") >= 0 &&
-            restoreOriginal.indexOf("sourceContentMatches(file, it") < restoreOriginal.indexOf("deleteInternal(file)"))
-    check("new MediaStore restore verifies output before removing encrypted copy",
-        restoreOriginal.lastIndexOf("verifyUriDigest(") >= 0 &&
-            restoreOriginal.lastIndexOf("verifyUriDigest(") < restoreOriginal.lastIndexOf("deleteInternal(file)"))
+        .substringBefore("/**\n     * Restore to a SAF-created document")
+    val sourceCheck = restoreOriginal.indexOf("sourceContentMatches(current, it")
+    val existingSourceCleanup = restoreOriginal.indexOf("deleteInternal(published)")
+    check("original restore verifies an existing source before removing encrypted copy",
+        sourceCheck >= 0 && existingSourceCleanup > sourceCheck)
+
+    val restoreMediaStore = repositoryText.substringAfter("private fun restoreToMediaStore(", "")
+        .substringBefore("private fun restoreToTreeFolder(")
+    val mediaReadBack = restoreMediaStore.indexOf("verifyUriDigest(target, file.size, digest")
+    val mediaCleanup = restoreMediaStore.indexOf("deleteInternal(published)")
+    check("MediaStore restore reads back and publishes output before removing encrypted copy",
+        mediaReadBack >= 0 && mediaReadBack < mediaCleanup &&
+            restoreMediaStore.indexOf("resolver.update(target, publishedValues") > mediaReadBack)
+
+    val restoreTree = repositoryText.substringAfter("private fun restoreToTreeFolder(", "")
+        .substringBefore("/** A conflicting SAF name")
+    val treeReadBack = restoreTree.indexOf("verifyUriDigest(target, file.size, digest")
+    val treeCleanup = restoreTree.indexOf("deleteInternal(published)")
+    check("SAF folder restore reads back output before removing encrypted copy",
+        treeReadBack >= 0 && treeReadBack < treeCleanup)
+
     val restoreUri = repositoryText.substringAfter("suspend fun restoreToUri(", "")
-        .substringBefore("/** Decrypts an explicit user-requested export")
-    check("SAF restore reads back output before removing encrypted copy",
-        restoreUri.indexOf("verifyUriDigest(") >= 0 && restoreUri.indexOf("verifyUriDigest(") < restoreUri.indexOf("deleteInternal(file)"))
+        .substringBefore("private fun restoreToMediaStore(")
+    val uriReadBack = restoreUri.indexOf("verifyUriDigest(target, current.size, digest")
+    val uriCleanup = restoreUri.indexOf("deleteInternal(current.copy(")
+    check("SAF save-picker restore reads back output before removing encrypted copy",
+        uriReadBack >= 0 && uriReadBack < uriCleanup)
     check("corrupt vault metadata is surfaced instead of displayed as an empty vault",
         repositoryText.contains("Vault entry metadata could not be verified") && !repositoryText.substringAfter("suspend fun list(").substringBefore("suspend fun folders").contains("mapNotNull"))
 

@@ -24,3 +24,6 @@ release/
 
 # apksigner v4 signature files (not needed for a normal install)
 *.idsig
+
+# Session-local test APK/checksum artifacts (never release assets)
+downloads/
