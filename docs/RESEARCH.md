@@ -17,3 +17,24 @@ Research performed before changing storage or biometric behavior. No third-party
 ## Licensing and reuse
 
 The inspected projects use Apache-2.0, AGPL-3.0, and GPL-3.0 licenses respectively. They were used as architecture/documentation references only; no third-party application implementation code was copied into Compass. Platform API use follows Android's own documentation.
+
+## Decisions added for Compass 2.4
+
+- **Deletion consent per Android version** follows Android's own guidance:
+  `MediaStore.createDeleteRequest` for a per-app-owned item and Android's
+  batched delete request on API 30+, `RecoverableSecurityException` one item at
+  a time on API 29, and the legacy write permission below that. Every result is
+  verified by reading the URI back; nothing is inferred from an empty query when
+  access may have been revoked.
+- **Scoped storage is respected, never bypassed.** Compass does not ask for
+  `MANAGE_EXTERNAL_STORAGE`. Documents and APK files are reachable through
+  Storage Access Framework grants (several folders, each persisted separately)
+  or, on Android 10-12, through the non-media rows MediaStore already exposes.
+  The sections that cannot be served say why instead of showing an empty list.
+- **The "duplicate copy" anti-pattern was removed.** Several vault apps keep the
+  public original and add an encrypted copy (or export a plaintext copy on the
+  way out). Compass 2.4 has exactly one protected copy per file: the encrypted
+  one, created and verified before any original is removed.
+- **File naming on restore** never overwrites: a conflict becomes
+  `name (1).ext`, the same convention file managers and browsers use, so an
+  interrupted or repeated restore cannot destroy existing data.

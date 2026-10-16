@@ -26,11 +26,11 @@ import com.compass.vault.ui.Palette
 import com.compass.vault.ui.PinReason
 import com.compass.vault.ui.Screen
 import com.compass.vault.ui.screen.CompassScreen
+import com.compass.vault.ui.screen.LibraryScreen
 import com.compass.vault.ui.screen.MediaPreviewScreen
 import com.compass.vault.ui.screen.PinScreen
 import com.compass.vault.ui.screen.SettingsScreen
 import com.compass.vault.ui.screen.SetupScreen
-import com.compass.vault.ui.screen.VaultScreen
 import com.compass.vault.ui.screen.ViewerScreen
 
 /**
@@ -39,21 +39,27 @@ import com.compass.vault.ui.screen.ViewerScreen
  * Responsibilities:
  *  * host the single screen container,
  *  * apply **FLAG_SECURE** to ask Android to block screenshots and recording
- *    and redact the recent-app preview (platform behavior can vary),
+ *    and to redact the recent-app preview (platform behavior can vary),
  *  * drive the automatic locking when the app goes to the background,
- *  * talk to the system file picker (Storage Access Framework) and to the
- *    MediaStore delete request.
+ *  * talk to the system file pickers (Storage Access Framework) and to the
+ *    Android deletion consent that scoped storage requires before an app may
+ *    remove another app's media file.
  */
 class MainActivity : Activity(), Navigator {
 
     companion object {
         private const val REQUEST_PICK_FILES = 1001
-        private const val REQUEST_EXPORT_TARGET = 1002
         private const val REQUEST_RESTORE_TARGET = 1003
-        private const val REQUEST_DELETE_ORIGINAL = 1004
+        private const val REQUEST_DELETE_ORIGINALS = 1004
         private const val REQUEST_MEDIA_PERMISSION = 1005
         private const val REQUEST_LEGACY_WRITE_PERMISSION = 1006
         private const val REQUEST_PICK_LIBRARY_FOLDER = 1007
+
+        /**
+         * Android 10 asks for one consent per media item through
+         * [RecoverableSecurityException]; each answer arrives here.
+         */
+        private const val REQUEST_DELETE_RECOVERABLE = 1008
         private const val STATE_ROUTE = "route"
         private const val ROUTE_SETUP = "setup"
         private const val ROUTE_COMPASS = "compass"
@@ -75,33 +81,44 @@ class MainActivity : Activity(), Navigator {
     private var pendingPickCallback: ((List<Uri>) -> Unit)? = null
     private var pendingLibraryFolderCallback: ((Uri) -> Unit)? = null
     private var pendingVaultViewer: VaultFile? = null
-    private var pendingExportCallback: ((Uri) -> Unit)? = null
     private var pendingRestoreCallback: ((Uri) -> Unit)? = null
-    private var pendingDeleteCallback: ((Boolean, String?) -> Unit)? = null
-    private var pendingDeleteUri: Uri? = null
     private var pendingMediaPermissionCallback: ((Boolean) -> Unit)? = null
+
+    /** A batch source-removal request while Android's consent dialog is up. */
+    private var pendingDeleteCallback: ((Set<String>, String?) -> Unit)? = null
+    private var pendingDeleteTargets: List<Pair<Uri, Uri>> = emptyList()
+    private var pendingDeleteRemoved: MutableSet<String> = LinkedHashSet()
+    private var pendingDeleteMessages: MutableList<String> = mutableListOf()
+
+    /**
+     * Android 10 consent queue. Every media item owned by another app needs its
+     * own confirmation there, so the senders are answered one after another
+     * instead of failing the whole batch when the first one is refused.
+     */
+    private val recoverableQueue = ArrayDeque<Pair<Uri, IntentSender>>()
+    private var recoverableCurrent: Pair<Uri, IntentSender>? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
-     * True while a system picker (import / export) is on screen.
+     * True while a system picker or a system consent dialog is on screen.
      *
-     * The system picker is a different app, so our activity is stopped while
-     * it is open. We must not tear the vault screen down in that case: the
-     * import continues in the background and its progress has to stay
-     * visible when the user comes back.
+     * Those dialogs belong to another process, so our activity is stopped while
+     * they are visible. The screen must not be torn down in that case: the
+     * lock transaction continues in the background and its progress has to
+     * stay visible when the owner comes back.
      */
-    private var systemPickerOpen = false
+    private var systemDialogOpen = false
 
     private val lockListener = object : LockController.Listener {
         override fun onLockChanged(unlocked: Boolean) {
             if (!unlocked) {
-                // Remove authenticated routes immediately; the public browser
+                // Remove authenticated routes immediately; the public library
                 // contains only files Android still exposes outside the vault.
                 viewerFile = null
                 pendingVaultViewer = null
                 if (route != ROUTE_SETUP && route != ROUTE_LIBRARY) {
                     route = ROUTE_LIBRARY
-                    show(VaultScreen(this@MainActivity, graph, this@MainActivity), activate = false)
+                    show(LibraryScreen(this@MainActivity, graph, this@MainActivity), activate = false)
                 }
             }
         }
@@ -144,8 +161,6 @@ class MainActivity : Activity(), Navigator {
 
     override fun onStart() {
         super.onStart()
-        // The grace period affects whether the authenticated tab may be opened;
-        // the public library stays the visible home after a background switch.
         graph.lockController.onReturnedToForeground()
         currentScreen?.onShow()
     }
@@ -153,11 +168,11 @@ class MainActivity : Activity(), Navigator {
     override fun onStop() {
         super.onStop()
         graph.lockController.onEnteredBackground()
-        if (graph.lockController.isUnlocked && !systemPickerOpen) {
+        if (graph.lockController.isUnlocked && !systemDialogOpen) {
             // Replace protected rows/viewers before the task is shown in recents.
-            // Do not start any sensors or scanning work while in the background.
+            // No sensors or scans are started while the app is in the background.
             route = ROUTE_LIBRARY
-            show(VaultScreen(this, graph, this), activate = false)
+            show(LibraryScreen(this, graph, this), activate = false)
         }
     }
 
@@ -190,9 +205,9 @@ class MainActivity : Activity(), Navigator {
 
     /**
      * @param activate when false the screen is only rendered - it is not
-     *        started. That is used for the "pretend to be a compass while we
-     *        are in the background" switch, so the magnetometer does not
-     *        keep running behind the user's back.
+     *        started. That is used for the "pretend to be a library while we
+     *        are in the background" switch, so no scanning keeps running
+     *        behind the user's back.
      */
     private fun show(screen: Screen, activate: Boolean) {
         currentScreen?.onHide()
@@ -208,7 +223,7 @@ class MainActivity : Activity(), Navigator {
     override fun showLibrary() {
         pendingVaultViewer = null
         route = ROUTE_LIBRARY
-        show(VaultScreen(this, graph, this))
+        show(LibraryScreen(this, graph, this))
     }
 
     override fun showCompass() {
@@ -229,7 +244,7 @@ class MainActivity : Activity(), Navigator {
             show(ViewerScreen(this, graph, this, pending))
         } else {
             route = ROUTE_VAULT
-            show(VaultScreen(this, graph, this, initialLocked = true))
+            show(LibraryScreen(this, graph, this, initialLocked = true))
         }
     }
 
@@ -280,11 +295,11 @@ class MainActivity : Activity(), Navigator {
             )
         }
         pendingPickCallback = onPicked
-        systemPickerOpen = true
+        systemDialogOpen = true
         try {
             startActivityForResult(intent, REQUEST_PICK_FILES)
         } catch (_: Exception) {
-            systemPickerOpen = false
+            systemDialogOpen = false
             pendingPickCallback = null
             toast("The system file picker could not be opened")
         }
@@ -298,13 +313,25 @@ class MainActivity : Activity(), Navigator {
                     Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
                     Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
             )
+            // Open the picker on a folder that usually holds documents. On
+            // Android 11+ the storage root and the Download folder itself
+            // cannot be granted any more, their subfolders can.
+            runCatching {
+                putExtra(
+                    DocumentsContract.EXTRA_INITIAL_URI,
+                    DocumentsContract.buildDocumentUri(
+                        "com.android.externalstorage.documents",
+                        "primary:Documents"
+                    )
+                )
+            }
         }
         pendingLibraryFolderCallback = onPicked
-        systemPickerOpen = true
+        systemDialogOpen = true
         try {
             startActivityForResult(intent, REQUEST_PICK_LIBRARY_FOLDER)
         } catch (_: Exception) {
-            systemPickerOpen = false
+            systemDialogOpen = false
             pendingLibraryFolderCallback = null
             toast("Android could not open the folder picker")
         }
@@ -328,31 +355,21 @@ class MainActivity : Activity(), Navigator {
         }
     }
 
-    override fun pickExportTarget(suggestedName: String, onTarget: (Uri) -> Unit) {
-        pendingExportCallback = onTarget
-        launchCreateDocument(suggestedName, "*/*", REQUEST_EXPORT_TARGET)
-    }
-
     override fun pickRestoreTarget(suggestedName: String, mimeType: String, onTarget: (Uri) -> Unit) {
         pendingRestoreCallback = onTarget
-        launchCreateDocument(suggestedName, mimeType, REQUEST_RESTORE_TARGET)
-    }
-
-    private fun launchCreateDocument(suggestedName: String, mimeType: String, requestCode: Int) {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = mimeType.ifBlank { "*/*" }
             putExtra(Intent.EXTRA_TITLE, suggestedName)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
-        systemPickerOpen = true
+        systemDialogOpen = true
         try {
-            startActivityForResult(intent, requestCode)
+            startActivityForResult(intent, REQUEST_RESTORE_TARGET)
         } catch (_: Exception) {
-            systemPickerOpen = false
-            pendingExportCallback = null
+            systemDialogOpen = false
             pendingRestoreCallback = null
-            toast("The system save picker could not be opened")
+            toast("The system save dialog could not be opened")
         }
     }
 
@@ -397,81 +414,215 @@ class MainActivity : Activity(), Navigator {
             return
         }
         pendingMediaPermissionCallback = onResult
-        systemPickerOpen = true
+        systemDialogOpen = true
         requestPermissions(missing, REQUEST_MEDIA_PERMISSION)
     }
 
+    /** True when the URI is a SAF document that is not a MediaStore item. */
+    private fun isSafDocumentUri(uri: Uri): Boolean =
+        uri.authority != "media" && DocumentsContract.isDocumentUri(this, uri)
+
     /**
-     * Remove a public source only after the repository has verified its
-     * encrypted copy. Android-owned media deletion is a system-consent flow.
+     * Remove public originals after the repository has verified the encrypted
+     * copy of every one of them.
+     *
+     * SAF documents are deleted through their provider (no dialog). MediaStore
+     * items need Android's own consent on Android 11+ - that consent is asked
+     * once for the whole batch - and are deleted directly with the legacy
+     * write permission on Android 8-9. Every removal is verified afterwards;
+     * the callback reports exactly which sources are provably gone.
      */
-    override fun requestDeleteOriginal(uri: Uri, onResult: (Boolean, String?) -> Unit) {
-        val mediaUri = mediaStoreUriFor(uri)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && mediaUri != null) {
-            launchDeleteRequest(mediaUri, onResult)
+    override fun requestDeleteOriginals(
+        uris: List<Uri>,
+        onResult: (removed: Set<String>, message: String?) -> Unit
+    ) {
+        if (uris.isEmpty()) {
+            onResult(emptySet(), null)
             return
         }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && mediaUri != null &&
+        pendingDeleteCallback = onResult
+        pendingDeleteRemoved = LinkedHashSet()
+        pendingDeleteMessages = mutableListOf()
+        pendingDeleteTargets = emptyList()
+        systemDialogOpen = true
+        val needsLegacyWritePermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            uris.any { !isSafDocumentUri(it) } &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
-        ) {
-            pendingDeleteUri = mediaUri
-            pendingDeleteCallback = onResult
-            systemPickerOpen = true
+        if (needsLegacyWritePermission) {
             requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), REQUEST_LEGACY_WRITE_PERMISSION)
+            pendingDeleteTargets = uris.map { it to (mediaStoreUriFor(it) ?: it) }
             return
         }
-        performDirectDelete(uri, mediaUri, onResult)
+        startRemoval(uris)
     }
 
-    private fun launchDeleteRequest(uri: Uri, callback: (Boolean, String?) -> Unit, sender: IntentSender? = null) {
-        pendingDeleteUri = uri
-        pendingDeleteCallback = callback
-        systemPickerOpen = true
+    private fun startRemoval(uris: List<Uri>) {
+        Thread({
+            val removed = LinkedHashSet<String>()
+            val messages = mutableListOf<String>()
+            val safDocuments = uris.filter { isSafDocumentUri(it) }
+            val others = uris.filterNot { isSafDocumentUri(it) }
+
+            for (original in safDocuments) {
+                val deleted = try {
+                    DocumentsContract.deleteDocument(contentResolver, original)
+                } catch (_: Exception) {
+                    false
+                }
+                if (deleted && verifyUriAbsent(original)) {
+                    removed += original.toString()
+                } else {
+                    messages += "A provider refused to delete one of the approved documents."
+                }
+            }
+
+            val mediaTargets = ArrayList<Pair<Uri, Uri>>()
+            for (original in others) {
+                val target = mediaStoreUriFor(original)
+                if (target != null) mediaTargets += original to target
+            }
+            val direct = others.filter { original -> mediaTargets.none { it.first == original } }
+            for (original in direct) {
+                val deleted = try {
+                    contentResolver.delete(original, null, null) > 0
+                } catch (_: Exception) {
+                    false
+                }
+                if (deleted && verifyUriAbsent(original)) removed += original.toString()
+                else messages += "One source could not be removed through its provider."
+            }
+
+            var consentNeeded = false
+            val queued = ArrayList<Pair<Uri, IntentSender>>()
+            if (mediaTargets.isNotEmpty()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    consentNeeded = true
+                } else {
+                    for ((original, target) in mediaTargets) {
+                        val sender = deleteMediaItem(original, target, removed, messages)
+                        if (sender != null) queued += original to sender
+                    }
+                }
+            }
+
+            mainHandler.post {
+                if (consentNeeded) {
+                    pendingDeleteTargets = mediaTargets
+                    pendingDeleteRemoved.addAll(removed)
+                    pendingDeleteMessages.addAll(messages)
+                    launchDeleteConsent(mediaTargets.map { it.second })
+                } else if (queued.isNotEmpty()) {
+                    pendingDeleteRemoved.addAll(removed)
+                    pendingDeleteMessages.addAll(messages)
+                    recoverableQueue.clear()
+                    recoverableQueue.addAll(queued)
+                    askNextRecoverable()
+                } else {
+                    finishRemoval(removed, messages)
+                }
+            }
+        }, "Compass-source-removal").start()
+    }
+
+    /**
+     * Removes one media item below Android 11.
+     *
+     * On Android 10 a file that another app owns cannot be deleted directly:
+     * the platform answers with a [RecoverableSecurityException] that carries
+     * the consent dialog for exactly this item. The dialog is answered in
+     * [askNextRecoverable], one item at a time, and the result is verified
+     * like every other removal.
+     *
+     * On Android 8 and 9 the delete goes through the write permission that is
+     * requested before the batch starts.
+     */
+    private fun deleteMediaItem(
+        original: Uri,
+        target: Uri,
+        removed: MutableSet<String>,
+        messages: MutableList<String>
+    ): IntentSender? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val deleted = contentResolver.delete(target, null, null) > 0
+                if (deleted && verifyUriAbsent(original)) removed += original.toString()
+                else messages += "Android did not confirm the deletion of one source."
+            } catch (recoverable: RecoverableSecurityException) {
+                return recoverable.userAction.actionIntent.intentSender
+            } catch (_: Exception) {
+                messages += "Android did not confirm the deletion of one source."
+            }
+            return null
+        }
         try {
-            val intentSender = sender ?: MediaStore.createDeleteRequest(contentResolver, listOf(uri)).intentSender
-            startIntentSenderForResult(intentSender, REQUEST_DELETE_ORIGINAL, null, 0, 0, 0)
+            val deleted = contentResolver.delete(target, null, null) > 0
+            if (deleted && verifyUriAbsent(original)) removed += original.toString()
+            else messages += "Android did not confirm the deletion of one source."
+        } catch (_: Exception) {
+            messages += "Android did not confirm the deletion of one source."
+        }
+        return null
+    }
+
+    private fun launchDeleteConsent(targets: List<Uri>) {
+        try {
+            val request = MediaStore.createDeleteRequest(contentResolver, targets)
+            startIntentSenderForResult(request.intentSender, REQUEST_DELETE_ORIGINALS, null, 0, 0, 0)
         } catch (error: Exception) {
-            systemPickerOpen = false
-            pendingDeleteUri = null
-            pendingDeleteCallback = null
-            callback(false, error.message ?: "Android could not start the deletion request")
+            finishRemoval(
+                pendingDeleteRemoved,
+                (pendingDeleteMessages + (error.message ?: "Android could not show the deletion dialog.")).toMutableList()
+            )
         }
     }
 
-    private fun performDirectDelete(originalUri: Uri, mediaUri: Uri?, callback: (Boolean, String?) -> Unit) {
-        val target = mediaUri ?: originalUri
+    /**
+     * Android 10 only: asks the owner about the next queued media item. Every
+     * answer is verified before the next dialog is shown, and a refusal only
+     * marks that one item as not removed.
+     */
+    private fun askNextRecoverable() {
+        val next = recoverableQueue.removeFirstOrNull()
+        if (next == null) {
+            recoverableCurrent = null
+            finishRemoval(pendingDeleteRemoved, pendingDeleteMessages.toMutableList())
+            return
+        }
+        recoverableCurrent = next
+        try {
+            startIntentSenderForResult(next.second, REQUEST_DELETE_RECOVERABLE, null, 0, 0, 0)
+        } catch (_: Exception) {
+            recoverableCurrent = null
+            pendingDeleteMessages += "Android refused to ask about one original; it was left untouched."
+            askNextRecoverable()
+        }
+    }
+
+    /** Verifies one Android 10 consent answer, then continues the queue. */
+    private fun confirmRecoverable(original: Uri, approved: Boolean) {
         Thread({
-            var removed = false
-            var message: String? = null
-            var confirmation: IntentSender? = null
-            try {
-                removed = if (mediaUri == null && DocumentsContract.isDocumentUri(this, originalUri)) {
-                    DocumentsContract.deleteDocument(contentResolver, originalUri)
-                } else {
-                    contentResolver.delete(target, null, null) > 0
-                }
-                if (removed && !verifyUriAbsent(target)) {
-                    removed = false
-                    message = "Android reported deletion, but the original is still discoverable"
-                }
-                if (!removed && message == null) message = "The provider did not confirm deletion"
-            } catch (error: SecurityException) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && error is RecoverableSecurityException) {
-                    confirmation = error.userAction.actionIntent.intentSender
-                } else {
-                    message = "Android denied permission to remove the original"
-                }
-            } catch (error: Exception) {
-                message = error.message ?: "Could not remove the original"
+            if (!approved) {
+                pendingDeleteMessages += "One public original was kept: the deletion was cancelled."
+            } else if (verifyUriAbsent(original)) {
+                pendingDeleteRemoved += original.toString()
+            } else {
+                pendingDeleteMessages += "Android reported success, but one original is still readable."
             }
-            val finalRemoved = removed
-            val finalMessage = message
-            val sender = confirmation
-            mainHandler.post {
-                if (sender != null) launchDeleteRequest(target, callback, sender)
-                else callback(finalRemoved, finalMessage)
-            }
-        }, "Compass-source-delete").start()
+            mainHandler.post { askNextRecoverable() }
+        }, "Compass-source-verification").start()
+    }
+
+    /** Publishes the batch result and delivers it to the waiting screen. */
+    private fun finishRemoval(removed: Set<String>, messages: List<String>) {
+        systemDialogOpen = false
+        recoverableQueue.clear()
+        recoverableCurrent = null
+        val callback = pendingDeleteCallback
+        pendingDeleteCallback = null
+        pendingDeleteTargets = emptyList()
+        pendingDeleteRemoved = LinkedHashSet()
+        pendingDeleteMessages = mutableListOf()
+        callback?.invoke(removed, messages.firstOrNull())
     }
 
     /** Convert a media document URI to a specific MediaStore item URI. */
@@ -496,7 +647,7 @@ class MainActivity : Activity(), Navigator {
         }
     }
 
-    /** A source is considered absent only when a read also proves it is gone. */
+    /** A source counts as gone only when a read also proves it. */
     private fun verifyUriAbsent(uri: Uri): Boolean {
         try {
             val column = if (DocumentsContract.isDocumentUri(this, uri)) "display_name" else "_id"
@@ -505,7 +656,7 @@ class MainActivity : Activity(), Navigator {
         } catch (_: SecurityException) {
             return false
         } catch (_: Exception) {
-            // Some providers do not implement query; fall through to the read check.
+            // Some providers do not implement query; fall through to a read check.
         }
         return try {
             val input = contentResolver.openInputStream(uri) ?: return false
@@ -531,7 +682,9 @@ class MainActivity : Activity(), Navigator {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        systemPickerOpen = false
+        if (requestCode != REQUEST_DELETE_ORIGINALS && requestCode != REQUEST_DELETE_RECOVERABLE) {
+            systemDialogOpen = false
+        }
         when (requestCode) {
             REQUEST_PICK_LIBRARY_FOLDER -> {
                 val uri = data?.data
@@ -540,8 +693,9 @@ class MainActivity : Activity(), Navigator {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
                 if (resultCode == Activity.RESULT_OK && uri != null) {
-                    try { contentResolver.takePersistableUriPermission(uri, persistableFlags) }
-                    catch (_: Exception) {
+                    try {
+                        contentResolver.takePersistableUriPermission(uri, persistableFlags)
+                    } catch (_: Exception) {
                         toast("Android did not allow persistent access to this folder")
                         return
                     }
@@ -572,38 +726,41 @@ class MainActivity : Activity(), Navigator {
                 if (resultCode == Activity.RESULT_OK && unique.isNotEmpty()) callback?.invoke(unique)
             }
 
-            REQUEST_EXPORT_TARGET -> {
-                val callback = pendingExportCallback
-                pendingExportCallback = null
-                if (resultCode == Activity.RESULT_OK) data?.data?.let { callback?.invoke(it) }
-            }
-
             REQUEST_RESTORE_TARGET -> {
                 val callback = pendingRestoreCallback
                 pendingRestoreCallback = null
                 if (resultCode == Activity.RESULT_OK) data?.data?.let { callback?.invoke(it) }
             }
 
-            REQUEST_DELETE_ORIGINAL -> {
-                val uri = pendingDeleteUri
-                val callback = pendingDeleteCallback
-                pendingDeleteUri = null
-                pendingDeleteCallback = null
-                if (callback != null && uri != null) {
-                    if (resultCode != Activity.RESULT_OK) {
-                        callback(false, "Deletion was cancelled; the original remains accessible")
-                    } else {
-                        Thread({
-                            val absent = verifyUriAbsent(uri)
-                            mainHandler.post {
-                                callback(
-                                    absent,
-                                    if (absent) null else "Android did not verify that the original was removed"
-                                )
-                            }
-                        }, "Compass-source-verification").start()
-                    }
+            REQUEST_DELETE_RECOVERABLE -> {
+                val answered = recoverableCurrent
+                recoverableCurrent = null
+                if (answered == null) {
+                    askNextRecoverable()
+                } else {
+                    confirmRecoverable(answered.first, resultCode == Activity.RESULT_OK)
                 }
+            }
+
+            REQUEST_DELETE_ORIGINALS -> {
+                if (resultCode != Activity.RESULT_OK) {
+                    finishRemoval(
+                        pendingDeleteRemoved,
+                        (pendingDeleteMessages + "Deletion was cancelled; the public originals remain.").toMutableList()
+                    )
+                    return
+                }
+                val targets = pendingDeleteTargets
+                val alreadyRemoved = LinkedHashSet(pendingDeleteRemoved)
+                val messages = ArrayList(pendingDeleteMessages)
+                Thread({
+                    val removed = LinkedHashSet(alreadyRemoved)
+                    for ((original, _) in targets) {
+                        if (verifyUriAbsent(original)) removed += original.toString()
+                        else messages += "Android reported success, but one original is still readable."
+                    }
+                    mainHandler.post { finishRemoval(removed, messages) }
+                }, "Compass-source-verification").start()
             }
         }
     }
@@ -611,25 +768,30 @@ class MainActivity : Activity(), Navigator {
     @Suppress("DEPRECATION")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        systemPickerOpen = false
         when (requestCode) {
             REQUEST_MEDIA_PERMISSION -> {
+                systemDialogOpen = false
                 val callback = pendingMediaPermissionCallback
                 pendingMediaPermissionCallback = null
                 callback?.invoke(hasMediaAccess())
             }
 
             REQUEST_LEGACY_WRITE_PERMISSION -> {
-                val uri = pendingDeleteUri
-                val callback = pendingDeleteCallback
-                pendingDeleteUri = null
-                pendingDeleteCallback = null
-                val granted = checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-                if (granted && uri != null && callback != null) {
-                    performDirectDelete(uri, uri) { removed, message -> callback(removed, message) }
-                } else {
-                    callback?.invoke(false, "Storage permission was denied; the original remains accessible")
+                val targets = pendingDeleteTargets.map { it.first }
+                val granted = checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                    PackageManager.PERMISSION_GRANTED
+                if (!granted) {
+                    finishRemoval(
+                        emptySet(),
+                        mutableListOf("Storage permission was denied; no public original was removed.")
+                    )
+                    return
                 }
+                if (targets.isEmpty()) {
+                    finishRemoval(emptySet(), mutableListOf("Nothing left to remove."))
+                    return
+                }
+                startRemoval(targets)
             }
         }
     }
@@ -647,14 +809,14 @@ class MainActivity : Activity(), Navigator {
 
             graph.lockController.isUnlocked -> {
                 route = ROUTE_VAULT
-                show(VaultScreen(this, graph, this, initialLocked = true), activate = false)
+                show(LibraryScreen(this, graph, this, initialLocked = true), activate = false)
             }
 
             else -> {
                 // The local file browser is the home screen; opening the
                 // authenticated vault tab still requires PIN/biometrics.
                 route = ROUTE_LIBRARY
-                show(VaultScreen(this, graph, this), activate = false)
+                show(LibraryScreen(this, graph, this), activate = false)
             }
         }
     }

@@ -228,7 +228,7 @@ The rest of the app follows the same pattern:
 | `CompassScreen` | `CompassScreen()` | the `Canvas` code moves over almost unchanged |
 | `PinScreen` | `PinScreen()` | the keypad becomes a `LazyVerticalGrid` or a `Column` of `Row`s; `PinDotsView` becomes a `Row` of `Box`es |
 | `SetupScreen` | `SetupScreen()` | a `when (step)` in a `Box` |
-| `VaultScreen` | `VaultScreen()` | `LazyColumn` + `items()` |
+| `LibraryScreen` | `LibraryScreen()` | `LazyColumn` + `items()` |
 | `ViewerScreen` | `ViewerScreen()` | `AndroidView` for `SurfaceView` + `MediaPlayer` |
 | `SettingsScreen` | `SettingsScreen()` | a `Column` of `SettingRow`s |
 

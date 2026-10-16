@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.CancellationSignal
@@ -190,6 +191,7 @@ class VaultRepository(
                     originVolume = origin?.volumeName,
                     originRelativePath = origin?.relativePath,
                     originDateTakenMs = origin?.dateTakenMs ?: 0L,
+                    originAbsolutePath = origin?.absolutePath,
                     contentSha256 = originalDigest.toHex(),
                     sourceState = VaultFile.SourceState.PUBLIC_COPY_PRESENT,
                     originTreeUri = origin?.treeUri,
@@ -293,47 +295,226 @@ class VaultRepository(
     // Restore / export / delete
     // -----------------------------------------------------------------------
 
-    /** Restore to the recorded location when it is safe and reconstructible. */
-    suspend fun restoreToOriginalMedia(file: VaultFile, onProgress: (Long) -> Unit = {}): Uri? =
+    /** What an automatic unlock achieved. */
+    sealed class RestoreOutcome {
+        /** The file is back in public storage and the encrypted entry is gone. */
+        data class Restored(val uri: Uri?, val name: String, val location: String) : RestoreOutcome()
+
+        /**
+         * Compass refuses to guess: the original location is unknown, gone, or
+         * a public copy may still exist there. The encrypted entry is kept and
+         * the owner picks a destination instead.
+         */
+        data class NeedsDestination(val reason: String) : RestoreOutcome()
+    }
+
+    /**
+     * Automatic unlock: put the protected file back where it came from.
+     *
+     * The order of preference mirrors how the file was locked:
+     *  1. an identical public copy already exists at the recorded origin - the
+     *     encrypted duplicate is simply dropped (no second copy is created),
+     *  2. the recorded SAF folder, restored through the provider,
+     *  3. the recorded MediaStore location on Android 10+,
+     *  4. the recorded absolute path on Android 8-9 (atomic rename there),
+     *  5. otherwise the caller offers the save-picker as an alternative.
+     *
+     * Every path verifies the written bytes (size + SHA-256) before the
+     * encrypted payload is removed. A failure throws and always keeps the
+     * encrypted copy.
+     */
+    suspend fun restoreToOriginal(file: VaultFile, onProgress: (Long) -> Unit = {}): RestoreOutcome =
         withContext(Dispatchers.IO) {
             mutationMutex.withLock {
                 recoverTransactionsLocked()
-                val current = readEntry(file.id) ?: throw IOException("This file is no longer in the vault")
+                val stored = readEntry(file.id) ?: throw IOException("This file is no longer in the vault")
+                // An interrupted removal (the owner cancelled Android's
+                // dialog, or the process died) must not block the unlock: the
+                // recovery pass above already confirmed that the source is
+                // still there, so the removal intent is taken back first.
+                val current = if (stored.operationState == VaultFile.OperationState.SOURCE_REMOVAL_PENDING) {
+                    val cleared = stored.copy(
+                        operationState = VaultFile.OperationState.READY,
+                        sourceState = VaultFile.SourceState.PUBLIC_COPY_PRESENT
+                    )
+                    writeMetadata(cleared)
+                    cleared
+                } else {
+                    stored
+                }
                 if (current.operationState != VaultFile.OperationState.READY) {
                     throw IOException("A previous file operation needs attention before this item can be restored")
                 }
                 val transactionContext = currentCoroutineContext()
                 val originUri = current.originUri?.let(Uri::parse)
-                val originalMatches = originUri?.let { sourceContentMatches(current, it, transactionContext) }
-                if (originUri != null && originalMatches == true) {
+
+                // 1. The public original is still there and identical.
+                if (originUri != null && sourceContentMatches(current, originUri, transactionContext) == true) {
                     val published = current.copy(
                         operationState = VaultFile.OperationState.RESTORE_PUBLISHED,
                         pendingDestinationUri = originUri.toString()
                     )
                     writeMetadata(published)
                     deleteInternal(published)
-                    return@withLock originUri
+                    return@withLock RestoreOutcome.Restored(
+                        originUri,
+                        current.name,
+                        locationLabelFor(current, originUri)
+                    )
                 }
 
-                // Do not make a second public copy while the original may still
-                // exist or its removal status is ambiguous. The caller offers
-                // a user-selected, conflict-safe destination instead.
-                if (current.sourceState != VaultFile.SourceState.PRIVATE_ONLY) return@withLock null
+                // 2. The original may still be public. Writing a second copy
+                //    would leave the vault duplicate the brief forbids, so the
+                //    owner is asked where the file should go instead.
+                if (current.sourceState != VaultFile.SourceState.PRIVATE_ONLY) {
+                    return@withLock RestoreOutcome.NeedsDestination(
+                        "Compass could not confirm that the public original is gone, so it will not create a second copy."
+                    )
+                }
 
+                // 3. The SAF folder the file was locked from.
                 if (!current.originTreeUri.isNullOrBlank() && !current.originParentDocumentId.isNullOrBlank()) {
                     val restored = restoreToTreeFolder(current, onProgress, transactionContext)
-                    if (restored != null) return@withLock restored
+                    if (restored != null) {
+                        return@withLock RestoreOutcome.Restored(
+                            restored,
+                            queryDisplayName(resolver, restored) ?: current.name,
+                            current.originTreeUri
+                        )
+                    }
                 }
 
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
-                    current.kind !in setOf(VaultFile.Kind.IMAGE, VaultFile.Kind.VIDEO, VaultFile.Kind.AUDIO) ||
-                    current.originVolume.isNullOrBlank() ||
-                    current.originRelativePath.isNullOrBlank()
-                ) return@withLock null
+                // 4. The MediaStore location (Android 10+).
+                val mediaRestore = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    current.kind in setOf(VaultFile.Kind.IMAGE, VaultFile.Kind.VIDEO, VaultFile.Kind.AUDIO) &&
+                    !current.originVolume.isNullOrBlank() &&
+                    !current.originRelativePath.isNullOrBlank()
+                if (mediaRestore) {
+                    val restored = restoreToMediaStore(current, onProgress, transactionContext)
+                    if (restored != null) {
+                        return@withLock RestoreOutcome.Restored(
+                            restored,
+                            queryDisplayName(resolver, restored) ?: current.name,
+                            current.originRelativePath.orEmpty()
+                        )
+                    }
+                }
 
-                restoreToMediaStore(current, onProgress, transactionContext)
+                // 5. Android 8-9: write straight back to the recorded path and
+                //    let the media scanner index it again.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && !current.originAbsolutePath.isNullOrBlank()) {
+                    val restored = restoreToPath(current, onProgress, transactionContext)
+                    if (restored != null) {
+                        val target = File(current.originAbsolutePath)
+                        return@withLock RestoreOutcome.Restored(
+                            Uri.fromFile(target),
+                            target.name,
+                            target.parent ?: ""
+                        )
+                    }
+                }
+
+                RestoreOutcome.NeedsDestination(
+                    "The original folder is no longer available to Compass."
+                )
             }
         }
+
+    /**
+     * Legacy restore (Android 8-9): decrypt into the recorded directory, verify
+     * the bytes, then rename over the final name - a single filesystem
+     * operation on the same volume. The encrypted copy is only removed after
+     * both verifications succeeded.
+     */
+    private fun restoreToPath(
+        file: VaultFile,
+        onProgress: (Long) -> Unit,
+        transactionContext: kotlin.coroutines.CoroutineContext
+    ): Boolean? {
+        val recorded = file.originAbsolutePath ?: return null
+        val directory = File(recorded).parentFile?.takeIf { it.isDirectory } ?: return null
+        val safeName = LibraryLogic.uniqueName(file.name, directory.list()?.toList().orEmpty())
+        val target = File(directory, safeName)
+        val partial = File(directory, ".$safeName.compass.part")
+        writeMetadata(file.copy(
+            operationState = VaultFile.OperationState.RESTORE_PREPARING,
+            pendingDestinationUri = target.toURI().toString(),
+            pendingDestinationName = safeName
+        ))
+        var committed = false
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            var written = 0L
+            val payload = payloadFor(file)
+            if (!payload.isFile) throw IOException("Missing encrypted payload")
+            FileInputStream(payload).use { encrypted ->
+                FileOutputStream(partial).use { fileOut ->
+                    BufferedOutputStream(fileOut, 64 * 1024).use { plain ->
+                        val sink = DigestOutputStream(plain, digest)
+                        cipher.decryptStream(cancellable(encrypted, transactionContext), sink) { count ->
+                            written = count
+                            onProgress(count)
+                        }
+                        sink.flush()
+                        fileOut.fd.sync()
+                    }
+                }
+            }
+            if (written != file.size) throw IOException("The restored byte count did not match the protected file")
+            val expected = file.contentSha256?.hexToBytes()
+            if (expected != null && !MessageDigest.isEqual(expected, digest.digest())) {
+                throw IOException("The restored file failed its integrity check")
+            }
+            // Read-back verification of the finished artefact before publishing.
+            val (readBack, size) = FileInputStream(partial).use { digestStream(it) }
+            if (size != file.size || (expected != null && !MessageDigest.isEqual(expected, readBack))) {
+                throw IOException("The restored file could not be verified on disk")
+            }
+            val writing = file.copy(
+                operationState = VaultFile.OperationState.RESTORE_WRITING,
+                pendingDestinationUri = target.toURI().toString(),
+                pendingDestinationName = safeName
+            )
+            writeMetadata(writing)
+            AtomicFileWriter.replace(partial, target)
+            val published = writing.copy(operationState = VaultFile.OperationState.RESTORE_PUBLISHED)
+            writeMetadata(published)
+            committed = true
+            MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf(file.mimeType), null)
+            deleteInternal(published)
+            return true
+        } catch (error: Throwable) {
+            if (partial.exists() && !partial.delete()) {
+                // Objection: an unverified partial file stays behind. Keep the
+                // encrypted copy and flag the item for review.
+                runCatching {
+                    writeMetadata(file.copy(
+                        operationState = VaultFile.OperationState.RESTORE_RECOVERY_REQUIRED,
+                        pendingDestinationUri = partial.toURI().toString(),
+                        pendingDestinationName = safeName
+                    ))
+                }
+                throw IOException("The restore was interrupted and left a partial file. The encrypted copy was kept.", error)
+            }
+            if (committed) {
+                throw IOException("The restore was verified; vault cleanup will resume safely on the next open.", error)
+            }
+            runCatching {
+                writeMetadata(file.copy(
+                    operationState = VaultFile.OperationState.READY,
+                    pendingDestinationUri = null,
+                    pendingDestinationName = null
+                ))
+            }
+            throw error
+        }
+    }
+
+    private fun locationLabelFor(file: VaultFile, uri: Uri): String = when {
+        !file.originRelativePath.isNullOrBlank() -> file.originRelativePath.trimStart('/')
+        !file.originAbsolutePath.isNullOrBlank() -> file.originAbsolutePath
+        else -> uri.toString()
+    }
 
     /**
      * Restore to a SAF-created document chosen by the user. The destination
@@ -553,21 +734,6 @@ class VaultRepository(
         )
         runCatching { writeMetadata(updated) }
     }
-
-    /** Decrypts an explicit user-requested export; the protected original remains. */
-    suspend fun export(file: VaultFile, target: Uri, onProgress: (Long) -> Unit) =
-        withContext(Dispatchers.IO) {
-            val transactionContext = currentCoroutineContext()
-            try {
-                val digest = writeDecryptedAndVerify(file, target, onProgress, transactionContext)
-                if (!verifyUriDigest(target, file.size, digest, transactionContext)) {
-                    throw IOException("The exported copy could not be verified")
-                }
-            } catch (error: Throwable) {
-                deleteProviderItem(target)
-                throw error
-            }
-        }
 
     /** Deletes an encrypted entry after a user-confirmed, irreversible action. */
     suspend fun delete(file: VaultFile) = withContext(Dispatchers.IO) {

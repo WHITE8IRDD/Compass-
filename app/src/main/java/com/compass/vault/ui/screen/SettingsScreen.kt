@@ -148,6 +148,46 @@ class SettingsScreen(
         val storageRow = activity.settingRow("Used by the vault", "…")
         container.addView(storageRow)
         container.addView(activity.hairline())
+        val lockedRow = activity.settingRow("Locked files", "…")
+        container.addView(lockedRow)
+        container.addView(activity.hairline())
+        container.addView(activity.settingRow("Clear temporary playback data", null) {
+            graph.repository.wipeTempFiles()
+            graph.mediaLibrary.clearCache()
+            navigator.toast("Temporary decrypted files and thumbnails were wiped")
+        })
+        container.addView(activity.hairline())
+
+        // --- library discovery ------------------------------------------------
+        container.addView(sectionLabel("WHERE COMPASS CAN LOOK"))
+        container.addView(activity.hairline())
+        val mediaRow = activity.settingRow(
+            "Photos, videos, audio",
+            if (navigator.hasMediaAccess()) {
+                if (navigator.hasPartialMediaAccess()) "Selected items only" else "Granted"
+            } else {
+                "Not granted"
+            }
+        ) {
+            navigator.requestMediaAccess { granted ->
+                if (granted) buildRows() else navigator.toast("Media access was not granted")
+            }
+        }
+        container.addView(mediaRow)
+        container.addView(activity.hairline())
+        val folderRow = activity.settingRow("Approved folders", "…") { showFoldersDialog() }
+        container.addView(folderRow)
+        container.addView(activity.hairline())
+        container.addView(activity.settingRow("Add a folder", null) { chooseFolder() })
+        container.addView(activity.hairline())
+        val note = activity.body(
+            "Android only exposes documents and APK files to an app through a folder you approve. " +
+                "Compass does not ask for the all-files permission and never uploads anything.",
+            Type.BODY, Palette.GRAY_DIM
+        )
+        note.setPadding(activity.dp(Spacing.MD), activity.dp(Spacing.SM), activity.dp(Spacing.MD), activity.dp(Spacing.LG))
+        container.addView(note)
+        container.addView(activity.hairline())
 
         // --- about -----------------------------------------------------------
         container.addView(sectionLabel("ABOUT"))
@@ -156,9 +196,18 @@ class SettingsScreen(
         container.addView(activity.hairline())
 
         scope.launch {
-            val used = graph.repository.storageUsedBytes()
-            val value = (storageRow.getChildAt(1) as? TextView) ?: return@launch
-            value.text = com.compass.vault.ui.formatSize(used)
+            try {
+                val used = graph.repository.storageUsedBytes()
+                (storageRow.getChildAt(1) as? TextView)?.text = com.compass.vault.ui.formatSize(used)
+                val count = graph.repository.list().size
+                (lockedRow.getChildAt(1) as? TextView)?.text = count.toString()
+                val folders = graph.documentLibrary.folderNames()
+                (folderRow.getChildAt(1) as? TextView)?.text = if (folders.isEmpty()) "None" else folders.joinToString(", ")
+            } catch (_: Exception) {
+                (storageRow.getChildAt(1) as? TextView)?.text = "Unavailable"
+                (lockedRow.getChildAt(1) as? TextView)?.text = "Unavailable"
+                (folderRow.getChildAt(1) as? TextView)?.text = "Unavailable"
+            }
         }
     }
 
@@ -293,6 +342,56 @@ class SettingsScreen(
             .show()
     }
 
+    private fun chooseFolder() {
+        navigator.pickLibraryFolder { uri ->
+            if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + AppDispatchers.main)
+            scope.launch {
+                try {
+                    graph.documentLibrary.addFolder(uri)
+                    navigator.toast("Folder added")
+                    buildRows()
+                } catch (_: Exception) {
+                    navigator.toast("Could not save folder access")
+                }
+            }
+        }
+    }
+
+    private fun showFoldersDialog() {
+        scope.launch {
+            try {
+                val folders = graph.documentLibrary.folders()
+                if (folders.isEmpty()) {
+                    navigator.toast("No folder has been approved yet")
+                    return@launch
+                }
+                val labels = folders.map { it.toString() }.toTypedArray()
+                AlertDialog.Builder(activity)
+                    .setTitle("Approved folders")
+                    .setItems(labels) { _, which ->
+                        val chosen = folders.getOrNull(which) ?: return@setItems
+                        AlertDialog.Builder(activity)
+                            .setTitle("Remove this folder?")
+                            .setMessage("$chosen\n\nCompass stops browsing and locking files in this folder. Files already locked stay in the vault.")
+                            .setPositiveButton("Remove") { _, _ ->
+                                scope.launch {
+                                    graph.documentLibrary.removeFolder(chosen)
+                                    runCatching { activity.contentResolver.releasePersistableUriPermission(chosen, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+                                    navigator.toast("Folder removed")
+                                    buildRows()
+                                }
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    }
+                    .setNegativeButton("Close", null)
+                    .show()
+            } catch (_: Exception) {
+                navigator.toast("Could not read the approved folders")
+            }
+        }
+    }
+
     private fun showAboutDialog() {
         AlertDialog.Builder(activity)
             .setTitle("Compass 2.4")
@@ -300,7 +399,7 @@ class SettingsScreen(
                 "A private file vault behind a compass.\n\n" +
                     "Vault payloads are encrypted with AES-256-GCM using a key held by Android Keystore. " +
                     "Biometric approval is an app-level gate; it does not re-wrap the encryption key.\n\n" +
-                    "Compass does not request network access permission. Explicitly exported files are plaintext copies.\n\n" +
+                    "Compass does not request network access permission and works fully offline.\n\n" +
                     "Vault files live in app-private storage. Uninstalling or clearing app data can make them unrecoverable."
             )
             .setPositiveButton("Close", null)

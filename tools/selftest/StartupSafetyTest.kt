@@ -142,34 +142,124 @@ fun main() {
         removalJournal.indexOf("sourceContentMatches(current, source") >= 0 &&
             removalJournal.indexOf("sourceContentMatches(current, source") < removalJournal.indexOf("writeMetadata(updated)"))
 
-    val vaultScreen = File(sourceRoot, "ui/screen/VaultScreen.kt")
-    check("VaultScreen.kt was found", vaultScreen.isFile)
-    if (vaultScreen.isFile) {
-        val text = vaultScreen.readText()
-        val importUris = text.substringAfter("private fun importUris(", "")
-            .substringBefore("private fun lockMedia(")
-        val newImport = importUris.lastIndexOf("graph.repository.import(")
-        val durableIntent = importUris.lastIndexOf("graph.repository.markSourceRemovalPending(")
-        val androidRemoval = importUris.lastIndexOf("requestRemoval(uri)")
-        check("batch flow journals source removal only after verified import returns",
-            newImport >= 0 && newImport < durableIntent && durableIntent < androidRemoval)
-        val lockMedia = text.substringAfter("private fun lockMedia(", "")
-            .substringBefore("private suspend fun requestRemoval(")
-        check("All Media lock flow asks Android to delete only after import returns",
-            lockMedia.indexOf("graph.repository.import(") >= 0 &&
-                lockMedia.indexOf("graph.repository.import(") < lockMedia.indexOf("requestRemoval(media.uri)"))
-        val refreshLocked = text.substringAfter("private fun refreshLocked(", "")
-            .substringBefore("// -----------------------------------------------------------------------")
-        check("empty MediaStore queries cannot silently mark originals as removed",
-            refreshLocked.contains("Do not infer a successful delete") && !refreshLocked.contains("sourceStillExists"))
-    }
+    // --- 4a. the library screen is the home screen and it is honest --------
+    val libraryScreen = File(sourceRoot, "ui/screen/LibraryScreen.kt")
+    check("LibraryScreen.kt was found", libraryScreen.isFile)
+    val libraryText = if (libraryScreen.isFile) libraryScreen.readText() else ""
+    check(
+        "the Locked Files tab is gated behind the vault authentication state",
+        libraryText.contains("if (target == Tab.LOCKED && !graph.lockController.isUnlocked)")
+    )
+    check(
+        "the library screen never claims a file is hidden without the transaction result",
+        libraryText.contains("public original(s) removed") || libraryText.contains("public original removed")
+    )
+    val sections = listOf("VIDEOS", "PHOTOS", "DOCUMENTS", "APK FILES", "OTHER FILES")
+    check(
+        "the home screen is built from the required sections " + sections,
+        sections.all { libraryText.contains("\"$it\"") }
+    )
 
-    val restoreOriginal = repositoryText.substringAfter("suspend fun restoreToOriginalMedia(", "")
-        .substringBefore("/**\n     * Restore to a SAF-created document")
-    val sourceCheck = restoreOriginal.indexOf("sourceContentMatches(current, it")
-    val existingSourceCleanup = restoreOriginal.indexOf("deleteInternal(published)")
-    check("original restore verifies an existing source before removing encrypted copy",
-        sourceCheck >= 0 && existingSourceCleanup > sourceCheck)
+    // --- 4b. the lock transaction orders encryption before deletion --------
+    val locker = File(sourceRoot, "ui/FileLocker.kt")
+    check("FileLocker.kt was found", locker.isFile)
+    val lockerText = if (locker.isFile) locker.readText() else ""
+    val importCall = lockerText.indexOf("graph.repository.import(")
+    val pendingJournal = lockerText.indexOf("markSourceRemovalPending")
+    val deleteRequest = lockerText.indexOf("requestDeleteOriginalsAwait(")
+    check(
+        "the lock flow encrypts before it journals a removal",
+        importCall >= 0 && pendingJournal > importCall
+    )
+    check(
+        "the lock flow journals the removal intent before it asks Android to delete",
+        pendingJournal >= 0 && deleteRequest > pendingJournal
+    )
+    check(
+        "a removal is recorded as succeeded only when Android confirmed it",
+        lockerText.contains("val wasRemoved = uri.toString() in removed") &&
+            lockerText.contains("graph.repository.markSourceRemoved(pending, wasRemoved)")
+    )
+
+    // --- 4c. the plaintext export workflow is gone -------------------------
+    val allSources = sources.joinToString("\n") { it.readText() }
+    check(
+        "the plaintext export workflow was removed from the app",
+        !allSources.contains("pickExportTarget") && !allSources.contains("fun export(")
+    )
+
+    // --- 4c2. every Android version has a removal path --------------------
+    val activityText = File(sourceRoot, "MainActivity.kt").let { if (it.isFile) it.readText() else "" }
+    check(
+        "media on Android 11+ is removed through one batched consent request",
+        activityText.contains("MediaStore.createDeleteRequest") &&
+            activityText.contains("REQUEST_DELETE_ORIGINALS")
+    )
+    check(
+        "media on Android 10 asks item by item instead of failing the batch",
+        activityText.contains("RecoverableSecurityException") &&
+            activityText.contains("askNextRecoverable")
+    )
+    check(
+        "Android 8-9 removal is gated behind the write permission",
+        activityText.contains("WRITE_EXTERNAL_STORAGE") &&
+            activityText.contains("REQUEST_LEGACY_WRITE_PERMISSION")
+    )
+    check(
+        "a removal is only reported after the system dialog answered",
+        activityText.contains("systemDialogOpen = true") &&
+            activityText.contains("Deletion was cancelled; the public originals remain.")
+    )
+
+    // --- 4d. multiple approved folders, dead grants pruned ---------------
+    val treeLibrary = File(sourceRoot, "data/DocumentTreeLibraryRepository.kt")
+    val treeText = if (treeLibrary.isFile) treeLibrary.readText() else ""
+    check("the SAF library stores several folders", treeText.contains("library-folders.enc"))
+    check(
+        "revoked SAF grants are detected instead of being scanned blindly",
+        treeText.contains("persistedUriPermissions")
+    )
+
+    // --- 4e. the media preview offers the same lock transaction -----------
+    val preview = File(sourceRoot, "ui/screen/MediaPreviewScreen.kt")
+    val previewText = if (preview.isFile) preview.readText() else ""
+    check(
+        "the media preview locks through the shared transaction",
+        previewText.contains("FileLocker(graph, navigator).lock(")
+    )
+
+    // --- 4f. the automatic unlock verifies before it removes ---------------
+    val restoreOriginal = repositoryText.substringAfter("suspend fun restoreToOriginal(", "")
+        .substringBefore("RestoreOutcome.NeedsDestination(\n                    \"The original folder is no longer available")
+    check(
+        "the automatic restore verifies an existing public original before dropping the encrypted copy",
+        restoreOriginal.indexOf("sourceContentMatches(current, originUri") in 1..restoreOriginal.indexOf("deleteInternal(published)")
+    )
+    check(
+        "the automatic restore refuses to create a second public copy",
+        restoreOriginal.contains("current.sourceState != VaultFile.SourceState.PRIVATE_ONLY") &&
+            restoreOriginal.contains("NeedsDestination")
+    )
+    val restorePath = repositoryText.substringAfter("private fun restoreToPath(", "")
+        .substringBefore("private fun locationLabelFor(")
+    check(
+        "the legacy path restore verifies the read-back before publishing",
+        restorePath.contains("Read-back verification") &&
+            restorePath.indexOf("Read-back verification") < restorePath.indexOf("AtomicFileWriter.replace(partial, target)")
+    )
+    check(
+        "the legacy path restore reports a partial file instead of hiding it",
+        restorePath.contains("left a partial file") &&
+            restorePath.contains("VaultFile.OperationState.RESTORE_RECOVERY_REQUIRED")
+    )
+    check(
+        "the automatic restore deletes the encrypted copy only after the destination is published",
+        restorePath.indexOf("AtomicFileWriter.replace(partial, target)") < restorePath.indexOf("deleteInternal(published)")
+    )
+    check(
+        "an empty MediaStore query is not treated as proof of removal",
+        libraryText.contains("An empty MediaStore query is not proof that a source was")
+    )
 
     val restoreMediaStore = repositoryText.substringAfter("private fun restoreToMediaStore(", "")
         .substringBefore("private fun restoreToTreeFolder(")

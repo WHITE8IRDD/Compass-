@@ -27,6 +27,13 @@ data class VaultFile(
     val originRelativePath: String? = null,
     /** Original capture time, if the provider exposed it. */
     val originDateTakenMs: Long = 0L,
+    /**
+     * Absolute path of the public source when Android exposed one (the `_data`
+     * column on Android 8-9, or the path encoded in a SAF document id). Used
+     * for display and for the legacy restore on API 26-28. Access is never
+     * inferred from it.
+     */
+    val originAbsolutePath: String? = null,
     /** SHA-256 of the verified plaintext, used to verify restore/source copies. */
     val contentSha256: String? = null,
     /** Whether an ordinary public source is known to remain accessible. */
@@ -89,6 +96,7 @@ data class VaultFile(
         put("originVolume", originVolume ?: JSONObject.NULL)
         put("originRelativePath", originRelativePath ?: JSONObject.NULL)
         put("originDateTaken", originDateTakenMs)
+        put("originAbsolutePath", originAbsolutePath ?: JSONObject.NULL)
         put("sha256", contentSha256 ?: JSONObject.NULL)
         put("sourceState", sourceState.name)
         put("originTreeUri", originTreeUri ?: JSONObject.NULL)
@@ -113,6 +121,7 @@ data class VaultFile(
             originVolume = json.nullableString("originVolume"),
             originRelativePath = json.nullableString("originRelativePath"),
             originDateTakenMs = json.optLong("originDateTaken", 0L),
+            originAbsolutePath = json.nullableString("originAbsolutePath"),
             contentSha256 = json.nullableString("sha256"),
             // Files written by the earlier version had no origin/removal
             // record. They stay visibly unverified, never optimistically hidden.

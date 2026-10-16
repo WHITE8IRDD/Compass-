@@ -2,11 +2,14 @@
 
 **An offline file browser and secure vault, with a working compass.**
 
-Compass 2.4 opens to a browsable local library for files Android exposes to
-the app. A separate Locked Files area stores verified encrypted copies in
-app-private storage. Tap the COMPASS heading to open the working compass
-screen; the compass/PIN/biometric routes remain an app-level access gate, not
-a substitute for Android device security.
+Compass 2.4 opens to a real, visual file library: sections for **Videos**,
+**Photos**, **Documents**, **APK files** and **Other files** with thumbnails,
+search, sorting and multi-select. **Lock** encrypts a file into the app's
+private vault, verifies the copy, and then removes the public original so the
+file disappears from galleries, media players and file managers. **Unlock**
+puts it back where it came from. Tap the COMPASS heading to open the working
+compass screen; the compass/PIN/biometric routes remain an app-level access
+gate, not a substitute for Android device security.
 
 <p align="center">
   <img src="docs/img/compass-concept.png" width="260" alt="Concept rendering of the compass screen">
@@ -15,10 +18,12 @@ a substitute for Android device security.
 </p>
 
 > *The three images above are **concept renderings** (mockups), not device
-> screenshots. This Compass 2.4 source candidate passed repository self-tests
-> and an offline build. A one-off test-signed APK is available in the Arena
-> workspace for sideload testing; it has not been installed or tested on a
-> device and is not a release. `COMPASS 0.2` is separate. See [Verification](#verification-status).*
+> screenshots. This Compass 2.4 build passed 121 automated assertions
+> (crypto, file-transaction, library-logic and static checks) and was compiled,
+> packaged and signed in the build sandbox. It has **not** been installed on a
+> physical device here, so Android provider/consent behavior on a real phone
+> remains unverified. `COMPASS 0.2` is a separate, older artifact. See
+> [Verification](#verification-status).*
 
 ---
 
@@ -40,18 +45,28 @@ a substitute for Android device security.
 
 ## How access works
 
-**The local library is the home screen.** Browse accessible MediaStore images,
-video, and audio, plus files beneath a folder you explicitly choose in
-Android's Storage Access Framework (SAF). The browser cannot crawl arbitrary
-shared storage; documents/APKs outside granted locations are not visible or
-protected. Search, category filters, sorting, refresh, and file details work
-on the items Android exposes.
+**The library is the home screen.** It shows the phone's photos, videos and
+audio from the MediaStore collections, plus every file inside the folders you
+approve through Android's Storage Access Framework (SAF). Android does not let
+an ordinary app crawl shared storage, so the screen states which locations are
+missing instead of pretending to be complete: media needs the optional media
+permission, documents/APKs need an approved folder or the file picker.
 
-**Locked Files is a separate authenticated view.** A file is not reported as
-fully hidden just because it appears in this view: Compass verifies the
-app-private encrypted copy first, then asks Android/provider to remove the
-public source. If removal is cancelled, denied, or ambiguous, the public copy
-is reported as remaining or needing verification.
+**Lock moves the file, it does not just hide it.** Compass streams the file
+into its private vault as AES-256-GCM ciphertext, decrypts the finished
+ciphertext again to compare byte count and SHA-256 with the source, and only
+then removes the public original: SAF documents through their provider (no
+dialog), media through Android's own consent (one dialog for the whole batch
+on Android 11+). Every removal is verified afterwards. A file that still has a
+public copy is labelled **"NOT FULLY HIDDEN · PUBLIC ORIGINAL MAY REMAIN"**
+with a retry action - Compass never claims a file is hidden when it is not.
+
+**Locked Files is a separate authenticated view.** It opens only after the PIN
+or a platform biometric. Unlock restores the file to the recorded location
+(SAF folder, MediaStore directory, or the recorded path on Android 8-9) with a
+conflict-safe name, verifies the written bytes, and removes the encrypted copy
+afterwards. If the original place is gone, Compass offers Android's save
+dialog instead of writing a guess.
 
 The COMPASS heading opens the original working compass screen. If enabled,
 holding its needle on the chosen bearing opens the vault; a long press brings
@@ -65,11 +80,11 @@ each file operation.
 
 | | |
 |---|---|
-| **Local library** | Browse accessible MediaStore images, videos, and audio, plus a persisted user-selected SAF folder for documents, APKs, and other files. Includes category filters, paging where supported, search, sorting, refresh, type badges, thumbnails, file details, permission/partial-scan messaging, and individual SAF file selection. |
-| **Locked Files** | A separate library for encrypted app-private items, folders, previews, restore/unlock, export, removal retry, and file information. |
+| **Local library** | A sectioned home screen (Videos, Photos, Documents, APK files, Other files) with previews and per-category full lists; paged MediaStore queries; several approved SAF folders with revoked-grant detection; search, sorting, refresh, multi-select and bulk locking; type badges, thumbnails, file details and honest "what is missing" panels. |
+| **Locked Files** | A separate authenticated library for encrypted app-private items: previews/playback, folders, automatic unlock/restore, removal retry, and file information. |
 | **Import and verify** | Stream selected content through AES-256-GCM in bounded chunks; decrypt the completed ciphertext to a digest sink and verify its byte count and SHA-256 before reporting import success. |
 | **Source removal** | Only request source deletion after a verified import. Android/provider consent may be required. Compass reports “not fully hidden” unless removal is explicitly confirmed and checked; gallery trash, cloud copies, and other copies remain outside its control. |
-| **Restore / export** | Restore to a recorded MediaStore location when safely available or to a user-selected SAF destination. Verify restored bytes before removing the encrypted copy. Export creates a warned plaintext copy and leaves the vault item in place. |
+| **Automatic unlock** | Restore to the recorded SAF folder, MediaStore location, or (on Android 8-9) the recorded path, with a verified read-back before the encrypted copy is removed. If the original is gone or a public copy may still exist, Compass explains why and offers Android's save dialog. File names are never overwritten: a conflict is restored as `name (1).ext`. |
 | **Preview / playback** | In-app public-media previews and protected-file image, video, and audio viewing/playback. Seekable protected media uses a private temporary plaintext cache while in use. |
 | **Encryption** | AES-256-GCM payloads and encrypted metadata use a non-exportable Android Keystore key. The key is device/installation-bound; uninstalling or losing it can make vault data unrecoverable. |
 | **Biometrics** | Platform biometric APIs when available and enrolled, with explicit error/cancel states and app-PIN fallback. Compass does not access biometric templates or bind the master key to the biometric. |
@@ -162,18 +177,32 @@ that draws the ring and the needle of the compass at five densities.
 
 ## Install it
 
-A one-off test-signed APK was generated for this Arena session and is
-available as a file attachment; it is not committed to this repository or
-hosted on GitHub. It is **not a release APK**. Its temporary signing key was
-deleted after signing, so it cannot update later builds; it also cannot update
-an installation signed with the historical v0.2 key. Do not uninstall an
-existing app with valuable vault data just to install this test build—back up
-first, or use a clean device/emulator. Android may require enabling
-"Install unknown apps" for the app used to open the APK.
+The signed release APK is published in the GitHub release **Compass 2.4**
+(tag `v2.4`). Binary assets could not be uploaded from this build environment
+(it can reach `api.github.com` but not `uploads.github.com`), so the release
+body links the identical files committed at the tag -
+[`dist/Compass-2.4.apk`](https://github.com/WHITE8IRDD/Compass-/raw/v2.4/dist/Compass-2.4.apk)
+and its checksum. Verify the download:
+
+```text
+d7d11f41c69263394690b256721a2c09470912ccf69fb8f633c2765094ce5578  Compass-2.4.apk
+```
+
+It is signed with a **new** Compass release key (RSA 4096, certificate
+SHA-256 `88ed48c454d52f62efa6d0299c3b7a26916c5644f991d7ac14356270a8c507be`).
+The historical 0.1/0.2 signing material is exposed in this repository's
+history and must not be reused, so this APK **installs only as a fresh
+install**: Android refuses it as an update of an existing 0.1/0.2
+installation. Uninstalling the app deletes its private vault data, so back up
+anything you cannot lose first, or use a clean device/emulator. Android may
+require enabling "Install unknown apps" for the app used to open the APK.
 
 **Minimum Android version:** 8.0 (API 26). MediaStore access uses optional
 runtime media permissions; individual files and folders use Android's SAF
-grants. The APK has not yet been installed or exercised on a device.
+grants. **The APK has never been installed or run in the environment that
+built it** - there is no device, emulator or `adb` there. Test it with
+disposable files and read [the verification report](docs/VERIFICATION.md)
+before trusting it with anything important.
 
 ---
 
@@ -189,15 +218,18 @@ Compass-/
 │       ├── assets/fonts/              # Inter variable font + its licence
 │       ├── java/com/compass/vault/
 │       │   ├── CompassApp.kt          # Application + the tiny DI graph
-│       │   ├── MainActivity.kt        # the single activity, routing, SAF
-│       │   ├── data/                  # media library, integrity-checked vault repository
+│       │   ├── MainActivity.kt        # the single activity: routing, SAF, delete consent
+│       │   ├── data/                  # LibraryLogic rules, MediaStore + SAF discovery,
+│       │   │                          #   integrity-checked vault repository
 │       │   ├── security/              # Keystore, PIN, wipe, lock, biometrics
-│       │   ├── ui/                    # design system, widgets, screens
+│       │   ├── ui/FileLocker.kt       # the one lock transaction (encrypt, journal, remove)
+│       │   ├── ui/screen/             # Library, Preview, Viewer, Compass, PIN, Setup, Settings
 │       │   └── util/                  # dispatchers, compass sensor
 │       └── res/                       # colours, strings, theme, icons
 ├── docs/                              # security, build, learning path, ...
 ├── tools/                             # offline packaging, icon generator, self tests
-├── dist/Compass-0.2.apk               # previously published release artifact
+├── dist/Compass-2.4.apk               # the signed Compass 2.4 release artifact
+├── dist/Compass-0.1.apk, Compass-0.2.apk  # historical release artifacts
 ├── build.gradle.kts
 ├── settings.gradle.kts
 └── gradle/libs.versions.toml
@@ -223,7 +255,8 @@ The short version:
 | 5 | `security/BiometricGate.kt` | platform biometric APIs and PIN fallback |
 | 6 | `security/LockController.kt` | the auto-lock state machine |
 | 7 | `data/VaultFile.kt` | the model |
-| 8 | `data/VaultRepository.kt` | verified import/restore/export and thumbnails |
+| 7a | `data/LibraryLogic.kt` | the pure rules: classification, conflict names, formatting |
+| 8 | `data/VaultRepository.kt` | verified import, automatic restore, recovery, thumbnails |
 | 8a | `data/MediaLibraryRepository.kt` | paged MediaStore discovery and previews |
 | 9 | `util/Dispatchers.kt` | coroutine dispatchers without AndroidX |
 | 10 | `util/CompassSensor.kt` | magnetometer → heading |
@@ -236,7 +269,8 @@ The short version:
 | 17 | `ui/screen/CompassScreen.kt` | the disguise and the unlock gesture |
 | 18 | `ui/screen/PinScreen.kt` | keypad, lock-out, biometrics, decoy |
 | 19 | `ui/screen/SetupScreen.kt` | the first-launch wizard |
-| 20 | `ui/screen/VaultScreen.kt` | All Media / Locked Files and file actions |
+| 20 | `ui/screen/LibraryScreen.kt` | the sectioned library, the Locked Files tab, lock/unlock |
+| 20a | `ui/FileLocker.kt` | the lock transaction: encrypt → journal → remove → verify |
 | 21 | `ui/screen/MediaPreviewScreen.kt` | public-media preview and playback |
 | 22 | `ui/screen/ViewerScreen.kt` | protected image/video/audio viewer |
 | 22 | `ui/screen/SettingsScreen.kt` | the settings |
@@ -306,32 +340,50 @@ how the app treats "the wrong person looking at the phone".
 
 ## Verification status
 
-This Compass 2.4 candidate compiled and packaged with the offline toolchain;
-`tools/run-selftest.sh` passed 23 crypto assertions and 33 static source checks.
-A test APK signed with a newly generated, non-release key was attached in the
-Arena session; it is intentionally not committed or hosted on GitHub. Its
-v2/v3 signature was verified, then the key was deleted. D8/R8 emitted
-Kotlin-metadata warnings and used API 34 stubs (the Gradle project declares
-compile SDK 35). No normal Gradle build, device installation, emulator run,
-or Android provider/authentication test was performed. Exact hash, signing details, and the manual device checklist
-are in **[docs/VERIFICATION.md](docs/VERIFICATION.md)**.
+Compass 2.4 compiled, packaged and signed with the offline toolchain.
+`tools/run-selftest.sh` passed **135 / 135 assertions**: AES-GCM round trips
+and tamper/truncation rejection (24), the library rules (34), the complete
+file transaction on the JVM - encrypt a 9 MB source, decrypt the ciphertext
+again, compare byte count and SHA-256, publish atomically, restore with
+read-back verification and only then delete the encrypted copy, plus the
+failure cases (26) - and 51 static checks of the security-critical step
+order.
 
-A successful compiler or package step does not prove that files are protected,
-removed, restored, or authenticated on a device.
+The release APK is 4,007,708 bytes with SHA-256
+`d7d11f41c69263394690b256721a2c09470912ccf69fb8f633c2765094ce5578`. Its ZIP
+integrity is intact, every stored entry (including `resources.arsc` and
+`classes.dex`) starts on a 4-byte boundary, and `apksigner verify` confirms
+APK Signature Scheme v2 + v3 with one RSA 4096 signer. `INTERNET` and
+`MANAGE_EXTERNAL_STORAGE` are neither declared nor present in `classes.dex`.
+
+D8/R8 emitted Kotlin-metadata warnings (the bundled R8 predates Kotlin 2.0)
+and the offline build uses API 34 stubs while the Gradle project declares
+compile SDK 35. No normal Gradle build was run. **No device installation,
+emulator run, or Android provider/consent/authentication test was
+performed** - there is no device or `adb` in the build environment. Exact
+hashes, the signing details and the manual device checklist are in
+**[docs/VERIFICATION.md](docs/VERIFICATION.md)**.
+
+A successful compiler or package step does not prove that files are
+protected, removed, restored, or authenticated on a device.
 
 ---
 
 ## Release status
 
-The GitHub release **COMPASS 0.2**, tag `v0.2`, remains published and Latest:
-[release page](https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.2) ·
-[download APK](https://github.com/WHITE8IRDD/Compass-/releases/download/v0.2/Compass-0.2.apk).
-GitHub currently lists the APK and checksum as attached assets. That older
-tag and artifact are separate from this source candidate. **Compass 2.4 has
-not been published**. A temporary test-signed APK exists only for local
-sideloading; no owner-signed release APK or new release was produced. See
-[the audit](docs/AUDIT.md), [verification report](docs/VERIFICATION.md), and
-[release status](docs/RELEASE.md).
+**Compass 2.4** is published as a GitHub release (tag `v2.4`) with the full
+release notes. The verified APK and its SHA-256 are committed at that tag and
+linked from the release body; attaching them as release assets was not
+possible from the build environment, which cannot reach GitHub's asset-upload
+host (`uploads.github.com`). Because the APK could not be installed or
+exercised on real hardware here, the release is the **Latest** one on the
+repository; the older **COMPASS 0.2** (tag `v0.2`) stays available but is no
+longer featured. The release notes state plainly that the APK has not been
+installed or exercised on hardware yet and point at the device checklist in
+[the verification report](docs/VERIFICATION.md).
+
+See [the audit](docs/AUDIT.md), [verification report](docs/VERIFICATION.md),
+[release notes](docs/RELEASE-NOTES.md) and [release status](docs/RELEASE.md).
 
 ---
 
@@ -369,12 +421,15 @@ do not reuse it. Removing the files here does not erase Git history or revoke
 the old identity; it also does not change the published `v0.2` APK.
 
 A different signing identity cannot update an installed APK signed with the
-old one. The test APK was signed with a fresh temporary key, not the old
-identity; that temporary key was deleted and the APK is not a release. The
-existing **COMPASS 0.2** tag/APK remain unchanged, with its APK and checksum
-attached. **Compass 2.4** remains device-untested and unpublished; see
-[docs/BUILD.md](docs/BUILD.md), [docs/VERIFICATION.md](docs/VERIFICATION.md),
-and [docs/RELEASE.md](docs/RELEASE.md) before future signing or release.
+old one. Compass 2.4 is therefore signed with a newly generated key
+(`CN=Compass, OU=Compass Android releases`, RSA 4096) that is kept outside
+this repository in `compass-signing/` (`compass-release.jks` + its password
+file) and documented in [docs/RELEASE.md](docs/RELEASE.md): every future
+update of `com.compass.vault` must use that same key. The existing
+**COMPASS 0.2** tag and APK are unchanged. Compass 2.4 is published but
+**device-untested** - see [docs/BUILD.md](docs/BUILD.md),
+[docs/VERIFICATION.md](docs/VERIFICATION.md), and
+[docs/RELEASE.md](docs/RELEASE.md).
 
 ---
 
