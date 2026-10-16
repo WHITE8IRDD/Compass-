@@ -86,8 +86,13 @@ class PinPadView(context: Context) : View(context) {
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
-        // Square grid: 3 columns wide, 4 rows high.
-        val height = (width * 4f / 3f).roundToInt()
+        // Square grid: 3 columns wide, 4 rows high; respect the parent's limit.
+        val desired = (width * 4f / 3f).roundToInt()
+        val height = when (MeasureSpec.getMode(heightMeasureSpec)) {
+            MeasureSpec.EXACTLY -> MeasureSpec.getSize(heightMeasureSpec)
+            MeasureSpec.AT_MOST -> min(desired, MeasureSpec.getSize(heightMeasureSpec))
+            else -> desired
+        }
         setMeasuredDimension(width, height)
     }
 
@@ -157,16 +162,6 @@ class PinPadView(context: Context) : View(context) {
         // The "x" inside the pentagon.
         canvas.drawLine(cx - size * 0.12f, cy - size * 0.3f, cx + size * 0.45f, cy + size * 0.3f, iconPaint)
         canvas.drawLine(cx + size * 0.45f, cy - size * 0.3f, cx - size * 0.12f, cy + size * 0.3f, iconPaint)
-    }
-
-    private fun drawFingerprint(canvas: Canvas, cx: Float, cy: Float, size: Float) {
-        iconPaint.color = Palette.GRAY
-        // A few concentric arcs - a neutral, abstract "biometric" glyph.
-        for (i in 3 downTo 1) {
-            val r = size * (0.45f + i * 0.28f)
-            val rect = android.graphics.RectF(cx - r, cy - r, cx + r, cy + r)
-            canvas.drawArc(rect, 200f, 140f, false, iconPaint)
-        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

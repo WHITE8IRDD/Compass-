@@ -95,8 +95,8 @@ PY
     --java "$BUILD/gen" \
     --min-sdk-version 26 \
     --target-sdk-version 35 \
-    --version-code 1 \
-    --version-name 0.1 \
+    --version-code 3 \
+    --version-name 0.2 \
     --auto-add-overlay \
     -o "$BUILD/base.apk" \
     "$BUILD"/res/*.flat
@@ -147,12 +147,12 @@ say "Signing (apksigner)"
     --v1-signing-enabled true \
     --v2-signing-enabled true \
     --v3-signing-enabled true \
-    --out "$OUT/Compass-0.1.apk" \
+    --out "$OUT/Compass-0.2.apk" \
     "$BUILD/unsigned.apk"
 
 say "Verifying"
-"$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" verify --verbose --print-certs "$OUT/Compass-0.1.apk"
+"$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" verify --verbose --print-certs "$OUT/Compass-0.2.apk"
 
 echo
-echo "APK: $OUT/Compass-0.1.apk"
-ls -la "$OUT/Compass-0.1.apk"
+echo "APK: $OUT/Compass-0.2.apk"
+ls -la "$OUT/Compass-0.2.apk"

@@ -89,20 +89,8 @@ object Fonts {
     /** Where the variable font lives inside the APK. */
     private const val FONT_PATH = "fonts/InterVariable.ttf"
 
-    private var base: Typeface? = null
-    private var loaded = false
-
-    private fun base(context: Context): Typeface? {
-        if (!loaded) {
-            loaded = true
-            base = try {
-                Typeface.createFromAsset(context.applicationContext.assets, "fonts/InterVariable.ttf")
-            } catch (e: Exception) {
-                null
-            }
-        }
-        return base
-    }
+    /** Cache the three weights after loading each typeface once. */
+    private val cache = HashMap<Int, Typeface>()
 
     /** Inter Regular (400). */
     fun regular(context: Context): Typeface = weight(context, 400)
@@ -113,23 +101,19 @@ object Fonts {
     /** Inter SemiBold (600). */
     fun semiBold(context: Context): Typeface = weight(context, 600)
 
-    private fun weight(context: Context, weight: Int): Typeface {
-        // Preferred path: build the typeface straight from the asset and set
-        // the "wght" axis of the variable font. `setFontVariationSettings`
-        // and the AssetManager constructor of `Typeface.Builder` both exist
-        // since API 26, which is our minimum.
-        try {
-            val builder = Typeface.Builder(context.assets, FONT_PATH)
-            builder.setFontVariationSettings("wght $weight")
-            return builder.build()
-        } catch (e: Exception) {
-            // Fall through to the plain instance.
+    private fun weight(context: Context, weight: Int): Typeface =
+        cache.getOrPut(weight) { build(context, weight) }
+
+    private fun build(context: Context, weight: Int): Typeface {
+        val assets = try { context.applicationContext.assets } catch (_: Exception) { null }
+        if (assets != null) {
+            try {
+                return Typeface.Builder(assets, FONT_PATH)
+                    .setFontVariationSettings("wght $weight").build()
+            } catch (_: Exception) { }
+            try { return Typeface.createFromAsset(assets, FONT_PATH) } catch (_: Exception) { }
         }
-        return try {
-            Typeface.createFromAsset(context.assets, FONT_PATH)
-        } catch (e: Exception) {
-            Typeface.create("sans-serif", Typeface.NORMAL)
-        }
+        return Typeface.create("sans-serif", Typeface.NORMAL)
     }
 }
 
