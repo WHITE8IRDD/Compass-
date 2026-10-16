@@ -1,123 +1,169 @@
-# Verification status
+# Compass 2.4 verification status
 
-**Status date: 2026-10-16.** Source, static checks, and an offline package
-were validated in the Arena sandbox. No Android device, emulator, or `adb`
-is available here, so runtime storage, UI, biometric, playback, and lifecycle
+**Status date: 2026-10-16.** Source compilation, repository self-tests, an
+offline unsigned package, and a separate test-signed APK were validated in the
+Arena sandbox. The test APK is signed only for sideload testing, not as a
+release. This is not device verification: no Android emulator/device or `adb`
+is available here, so provider, permission, authentication, lifecycle, and UI
 behavior remain unverified.
 
-## Checks run
+## Checks completed
 
-### Kotlin source compilation
-
-All Kotlin sources compiled against the bootstrapped Android API 34
-`android.jar` and bundled coroutines library with JDK 17:
+### Toolchain bootstrap
 
 ```bash
-kotlinc -classpath android.jar:kotlinx-coroutines-core-jvm.jar \
-  -jvm-target 17 -d /tmp/compass-classes \
-  app/src/main/java/com/compass/vault
+./tools/bootstrap-toolchain.sh /home/user/tc-kotlin-2.0.21
 ```
 
-**Result:** 0 errors. The compiler reported existing deprecation/redundancy
-warnings (framework back handling, legacy fingerprint callbacks, window
-insets, and one numeric conversion). This validates Kotlin types and syntax,
-not Android runtime behavior or API 35 compatibility.
+**Passed.** JDK 17.0.9, Kotlin 2.0.21, coroutines 1.8.0, Android API 34
+`android.jar`, and offline packaging tools were installed outside the Git
+repository. Kotlin 2.0.21 matches the project Gradle plugin version. The
+available D8/R8 package is older and still emits metadata parsing warnings.
 
-### Security and transaction self-tests
+### Repository self-tests
 
 ```bash
-TOOLCHAIN=/path/to/toolchain ./tools/run-selftest.sh
+./tools/run-selftest.sh
 ```
 
-The production AES-GCM, PIN hashing, and wipe helpers run on a desktop JVM
-with a test-only JCE key. Static startup/file-flow checks scan source code.
+- **23/23 crypto assertions passed.** This exercises AES-GCM stream and byte
+  round trips, tamper/truncation rejection, PIN hashing, constant-time compare,
+  PIN validation, and wipe helpers using a desktop JCE test key.
+- **33/33 startup and static transaction-order assertions passed.** These
+  inspect source ordering and failure behavior; they do not execute Android
+  storage providers or UI operations.
 
-- **23 / 23 crypto assertions passed.**
-- **27 / 27 startup and transaction-order assertions passed.**
+### Offline Kotlin/resource/package build
 
-These tests do not exercise Android Keystore, `ContentResolver`, MediaStore,
-SAF providers, runtime permissions, or device biometric APIs.
+```bash
+TOOLCHAIN=/home/user/tc-kotlin-2.0.21 ./tools/build-offline.sh
+```
 
-### Offline resource/package validation
+**Passed with D8 warnings.** Kotlin sources compiled with zero errors;
+resources linked; generated `R.java` compiled; D8 produced dex; the APK was
+packed. D8 emitted Kotlin-metadata parse/rewrite warnings because the available
+R8/D8 tooling is older than the compiler metadata. The available Android
+platform is API 34; Gradle declares compile SDK 35. This is not a normal AGP
+build and does not establish runtime compatibility.
 
-`tools/build-offline.sh` completed without signing. The generated artifact
-was kept outside the Git repository at
-`/home/user/.cache/compass-tc/offline-apk/Compass-Enhanced-0.2-unsigned.apk`.
+The resulting unsigned artifact is in the ignored build directory:
 
-- Size: **4,173,451 bytes**
-- SHA-256: `b174630f3ee3b6f49a87ee4a8a28af49ec22fc46a80fe624c5afdea2514a1426`
-- Python `zipfile.testzip()`: **no corrupt entry**
-- Contains `classes.dex`: **yes** (3,697,788 bytes)
-- `aapt2 dump badging`: package `com.compass.vault`, version `0.2`, code `3`, min SDK `26`, target SDK `35`
-- Manifest permissions include the expected biometric, haptic, legacy read/write-limited, modern media read, and Android 14 selected-visual-media declarations.
-- Manifest/DEX scan: **no `INTERNET` permission/string found** in the checked DEX.
-- Signature verification: **not applicable; this APK is unsigned** and is not a distributable release.
+```text
+build/offline/out/Compass-2.4-unsigned.apk
+```
 
-The sandbox's bootstrapped Kotlin compiler is newer than the project Gradle
-plugin, while its D8/R8 is older. D8 emitted Kotlin-metadata parsing warnings
-but completed packaging. The available Android platform is API 34 although
-the Gradle project configures compile SDK 35. A normal Gradle build with the
-project's supported toolchain is still required before any release decision.
+Inspection results:
 
-## Release state and signing
+- Size: **3,917,812 bytes**
+- SHA-256: `2f28c61258e6e2c3927c51b694b0b3c51ba676b986465734cd2a095728837551`
+- `aapt2 dump badging`: package `com.compass.vault`, version name `2.4`,
+  version code `24`, min SDK `26`, target SDK `35`, offline platform build
+  version/compile SDK `34`
+- ZIP integrity: **passed**; `classes.dex` present (3,442,140 bytes)
+- Manifest permissions: biometric, vibration, legacy storage reads limited to
+  API 32 and writes limited to API 28, per-media reads, and Android 14+
+  selected-visual-media permission
+- `INTERNET` permission: **not declared**; searched `INTERNET` string in the
+  DEX: **not found**
+- This default-output APK contains no signer entries and is unsigned. It is
+  not an installable release or update APK. The app bundle does not declare
+  internet access.
 
-The existing GitHub release **COMPASS 0.2**, tag `v0.2`, remains Latest.
-The tag and APK bytes are unchanged; the release notes were updated with a
-prominent download link and a replacement signing warning. The release page
-still has no attached binary assets: `gh release upload` failed because the
-build environment's connection to `uploads.github.com` returned EOF. The
-release notes link directly to the APK stored in the tag.
+The default-output artifact is generated under the ignored `build/` directory.
+Re-running the build may change its hash if any source or packaging input
+changes.
 
-The checked-in `dist/Compass-0.2.apk` is the existing published artifact,
-not this source build. Its size is 4,052,764 bytes, its SHA-256 is
-`0d2e11e3674cb5651f692bfc5b96e9a130dff18a06e98c846e2e72e80df30f25`, its
-ZIP integrity passed, and `apksigner verify --verbose --min-sdk-version 23`
-verified v1, v2, and v3 signatures. The signing material was tracked in
-repository history and is treated as exposed; do not reuse that identity.
-No signed APK of the current source or new tag/release was produced.
+### Test-installable APK
 
-## Not yet tested on a device
+A second offline build was signed with a freshly generated, temporary
+**test-only** key so the app can be sideloaded. This did not use the exposed
+historical signing key or an owner release key. The temporary keystore was
+deleted after signing; it is not part of the repository or download.
 
-Before trusting this build with valuable files, test the following on Android
-versions spanning API 26–28, 29–32, 33, and 34–35 as available. Use throwaway
-files and retain an independent backup.
+- Arena workspace download: `downloads/Compass-2.4-test.apk` (session-local,
+  ignored by Git; not committed or hosted on GitHub)
+- Size: **3,925,788 bytes**
+- SHA-256: `c2a0ecd8f808c8fd5e7314241108d8c7f1243cf886e87bee07aa2518a9ab0776`
+- `apksigner verify`: **passed**; APK Signature Scheme v2 and v3 verified
+- Certificate SHA-256: `c3d464daa5167a3cb346896dc428fc35f58ede67667598ff61038a03870714c0`
+- Package/version are still `com.compass.vault` / `2.4` / code `24`; min SDK
+  26 and target SDK 35.
 
-### Permissions and media library
+**Installation caution:** This signer differs from the historical v0.2 signer,
+so Android will reject it as an update to an existing v0.2 installation.
+Uninstalling an app can erase its private vault data. Back up/export important
+data first, or use a clean device/emulator. Because the temporary test key was
+deleted, a future test APK cannot update this one either; a clean reinstall
+will be required. This artifact is for testing only, not distribution or a
+release. It has not yet been installed or tested on a device.
 
-- [ ] Deny all shared-media permissions; verify individual SAF file selection still works.
-- [ ] Grant only images, only video, only audio, and Android 14 selected-visual-media access; confirm Compass shows the accessible subset and labels partial access accurately.
-- [ ] Change/revoke access in Android Settings while Compass is running and after a restart; verify absence is never treated as proof of deletion.
-- [ ] Exercise All Media paging, search, all sort orders, thumbnails, folders, and provider/query failures.
+## Not performed
 
-### Import, removal, and restore
+- Normal Gradle/AGP debug or release build
+- APK installation, emulator run, or device run; no `adb`/emulator available
+- Owner-controlled release-signature verification or publication
+- MediaStore/SAF read, deletion consent, URI persistence, or restore tests
+- Runtime permission matrix, biometric enrollment/prompt, and app-lock timing
+- Playback/codec, UI accessibility, performance, or large-folder testing
+- Crash/process-death injection during import, source removal, restore, or
+  deletion
 
-- [ ] Import image, video, audio, large file, zero-byte file, SAF document, and multiple selected files.
-- [ ] Simulate a provider read error and app cancellation; verify the public source is never removed and failed temporary data is cleaned up.
-- [ ] Confirm Android's system delete-consent cancellation leaves the item marked public; approve deletion and verify that Compass only reports confirmed removal after the source is unreadable/absent.
-- [ ] Retry removal for a previously public source.
-- [ ] Restore to the recorded MediaStore folder and to a SAF destination; compare the restored bytes with the original.
-- [ ] Force destination write/read-back failures; verify the encrypted copy remains and partial public output is reported/cleaned where the provider permits.
-- [ ] Test same-name conflicts, an existing unchanged source, a changed source at the original URI, removed SAF grants, and revoked media permissions.
+Do not use valuable files as first-run test data. Keep independent backups;
+Compass is not a backup utility. A successful compiler or package step is not
+proof that a file was safely removed, restored, or authenticated on Android.
+
+## Manual device test plan
+
+Use disposable source files and retain known-good copies. Test on representative
+Android versions (API 26–28, 29–32, 33, and 34–35 where available).
+
+### Library and permissions
+
+- [ ] Deny media permissions; verify selected-folder browsing and individual
+      SAF imports still work.
+- [ ] Grant selected images, videos, audio, or Android 14+ selected visual
+      media; verify only accessible rows appear and partial access is clear.
+- [ ] Revoke a permission/grant while running and after restart; verify empty
+      queries are never treated as proof of source deletion.
+- [ ] Exercise category chips (videos, photos, documents, APK, other), SAF
+      recursion/limits, search, all sorts, refresh, thumbnails, and failures.
+
+### Protect/remove/restore
+
+- [ ] Import images, videos, audio, documents, APKs, zero-byte files, large
+      files, and batches. Verify content hash/size after restore.
+- [ ] Cancel or deny Android source-deletion consent; ensure the public copy is
+      reported as remaining and retry is available.
+- [ ] Approve removal and independently check the original is actually absent;
+      verify only a confirmed result is marked private-only.
+- [ ] Force-stop after source removal and during restore; verify recovery keeps
+      every valid copy and reports unresolved operations instead of overwriting.
+- [ ] Test same-name conflicts, changed content at the original URI, SAF grant
+      revocation, read-back failure, partial destination files, and cleanup
+      failure.
 
 ### Authentication, playback, and lifecycle
 
-- [ ] Test PIN, biometric success/cancel/error/no-enrollment, and fallback on supported Android versions/devices.
-- [ ] Test protected image/video/audio view, public image/video/audio preview, seek/pause/completion, and unsupported codecs.
-- [ ] Navigate away, background the app, trigger auto-lock, and force-stop during playback/import/restore; verify the UI is gated and cache cleanup runs.
-- [ ] Verify `FLAG_SECURE` behavior on the target device (OS/OEM screen-capture behavior can differ).
-- [ ] Test corrupted ciphertext/metadata and Keystore key invalidation; verify Compass surfaces an error and does not present a damaged vault as empty.
+- [ ] Test PIN success/failure/lockout, corrupt authentication state, biometric
+      success/cancel/error/no-enrollment, and PIN fallback.
+- [ ] Preview public items and open protected image/video/audio; test seek,
+      pause, completion, unsupported codecs, and cleanup on lock.
+- [ ] Background/reopen, trigger auto-lock, force-stop during long operations,
+      and inspect recent-task screenshot behavior on each target OS/OEM.
+- [ ] Verify APK files are never executed by Compass and inspect exported
+      plaintext only at the chosen destination.
 
-## Verification commands
+## GitHub release and signing status
 
-With a compatible Android SDK/toolchain, inspect a built APK using:
+`gh release list` and `gh release view v0.2` were checked on 2026-10-16. The
+existing **COMPASS 0.2** (`v0.2`) remains Latest and has two attached assets:
+`Compass-0.2.apk` (4,052,764 bytes) and its `.sha256` file. The repository APK
+hash is `0d2e11e3674cb5651f692bfc5b96e9a130dff18a06e98c846e2e72e80df30f25`.
+That release is separate from these source changes. No **Compass 2.4** tag or
+release was created. A temporary-key test APK exists for sideloading, but no
+owner-signed release APK was produced.
 
-```bash
-aapt2 dump badging path/to/app.apk
-aapt2 dump permissions path/to/app.apk
-apksigner verify --verbose path/to/app.apk
-sha256sum path/to/app.apk
-```
-
-Only claim a signed release after the official build, signer identity,
-`apksigner` result, APK checksum, device testing, and GitHub release state
-have all been separately confirmed.
+Historical signing material is exposed in repository history. Do not reuse
+it. A future Compass 2.4 publication requires owner-provisioned fresh signing
+material, a compatible official build, signature/checksum verification,
+required device testing, and explicit release approval. See [RELEASE.md](RELEASE.md).

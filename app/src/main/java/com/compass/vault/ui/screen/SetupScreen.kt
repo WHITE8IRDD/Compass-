@@ -65,6 +65,7 @@ class SetupScreen(
 
     /** False when the owner decides to use the PIN only. */
     private var bearingEnabled = true
+    private var biometricEnabled = false
 
     /** The dial of the "pick your mark" step. */
     private var dial: CompassView? = null
@@ -244,14 +245,11 @@ class SetupScreen(
 
         content.addView(activity.outlineButtonRow("USE THIS BEARING", {
             bearingEnabled = true
-            graph.pinStore.setSecretBearing(bearing)
-            graph.pinStore.setBearingEnabled(true)
             goToNextStep()
         }, emphasized = true))
         content.addView(activity.spacer(Spacing.SM))
         content.addView(activity.outlineButtonRow("USE THE PIN ONLY", {
             bearingEnabled = false
-            graph.pinStore.setBearingEnabled(false)
             goToNextStep()
         }))
         content.addView(activity.spacer(Spacing.MD))
@@ -265,19 +263,22 @@ class SetupScreen(
         content.addView(titleView)
         content.addView(activity.spacer(Spacing.SM))
 
+        val availability = biometricGate.availability()
+        val ready = availability == BiometricGate.Availability.READY
         val sub = activity.body(
-            "Use a system biometric prompt for quicker access. Your app PIN remains the fallback.",
+            if (ready) {
+                "Enable the Android system biometric prompt. Compass never reads or stores fingerprint data; your PIN remains the fallback."
+            } else {
+                "${biometricGate.availabilityMessage(availability)} You can enroll a fingerprint in Android Settings later, then enable it from Compass Settings. PIN protection is ready now."
+            },
             Type.BODY, Palette.GRAY
         )
         sub.gravity = Gravity.CENTER
         content.addView(sub)
         content.addView(activity.spacer(Spacing.XL))
 
-        content.addView(activity.outlineButtonRow("VERIFY & ENABLE BIOMETRIC", {
-            val ready = biometricGate.availability()
-            if (ready != BiometricGate.Availability.READY) {
-                navigator.toast(biometricGate.availabilityMessage(ready))
-            } else {
+        if (ready) {
+            content.addView(activity.outlineButtonRow("VERIFY & ENABLE BIOMETRIC", {
                 biometricHandle = biometricGate.authenticate(
                     title = "Enable biometric unlock",
                     subtitle = "Verify your identity to enable this shortcut"
@@ -285,20 +286,20 @@ class SetupScreen(
                     biometricHandle = null
                     when (result) {
                         BiometricGate.Result.Success -> {
-                            graph.pinStore.setBiometricEnabled(true)
+                            biometricEnabled = true
                             finishSetup()
                         }
                         BiometricGate.Result.Cancelled -> navigator.toast("Biometric setup cancelled; PIN is still available")
                         is BiometricGate.Result.Error -> navigator.toast(result.message)
                     }
                 }
-            }
-        }, emphasized = true))
-        content.addView(activity.spacer(Spacing.MD))
-        content.addView(activity.outlineButtonRow("NOT NOW", {
-            graph.pinStore.setBiometricEnabled(false)
+            }, emphasized = true))
+            content.addView(activity.spacer(Spacing.MD))
+        }
+        content.addView(activity.outlineButtonRow(if (ready) "NOT NOW" else "CONTINUE WITH PIN", {
+            biometricEnabled = false
             finishSetup()
-        }))
+        }, emphasized = !ready))
         content.addView(activity.spacer(Spacing.MD))
     }
 
@@ -337,38 +338,34 @@ class SetupScreen(
                     render()
                     return
                 }
-                scope.launch {
-                    graph.pinStore.setPin(pin)
-                    step = Step.BEARING
-                    render()
-                }
+                step = Step.BEARING
+                render()
             }
 
             else -> Unit
         }
     }
 
-    /**
-     * After the bearing step comes the biometric step - but only when the
-     * device actually has a biometric sensor. Without one the setup ends
-     * right here.
-     */
+    /** Always show biometric readiness so unavailable enrollment is explained, not hidden. */
     private fun goToNextStep() {
-        if (biometricGate.availability() == BiometricGate.Availability.READY) {
-            step = Step.BIOMETRIC
-            render()
-        } else {
-            finishSetup()
-        }
+        step = Step.BIOMETRIC
+        render()
     }
 
     private fun finishSetup() {
         val pin = firstPin ?: return
         scope.launch {
-            graph.pinStore.setPin(pin)
-            graph.pinStore.setSecretBearing(bearing)
-            graph.pinStore.setBearingEnabled(bearingEnabled)
-            navigator.showCompass()
+            if (!graph.pinStore.setPin(
+                    pin,
+                    initialBearing = bearing,
+                    bearingEnabled = bearingEnabled,
+                    biometricEnabled = biometricEnabled
+                )
+            ) {
+                navigator.toast("Could not save secure setup state. No file operations were started; please retry.")
+                return@launch
+            }
+            navigator.showLibrary()
         }
     }
 

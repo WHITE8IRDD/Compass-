@@ -1,12 +1,12 @@
-# Compass
+# Compass 2.4
 
-**A working compass that is also a private vault.**
+**An offline file browser and secure vault, with a working compass.**
 
-Compass looks and behaves like an ordinary compass app: a black screen, a
-needle, a degree readout. Underneath, it is an encrypted vault for your
-private photos, videos, audio and documents. The compass screen is a visual
-disguise; it is not a substitute for device security or protection from a
-person who knows the unlock route.
+Compass 2.4 opens to a browsable local library for files Android exposes to
+the app. A separate Locked Files area stores verified encrypted copies in
+app-private storage. Tap the COMPASS heading to open the working compass
+screen; the compass/PIN/biometric routes remain an app-level access gate, not
+a substitute for Android device security.
 
 <p align="center">
   <img src="docs/img/compass-concept.png" width="260" alt="Concept rendering of the compass screen">
@@ -14,10 +14,11 @@ person who knows the unlock route.
   <img src="docs/img/pin-concept.png" width="260" alt="Concept rendering of the PIN screen">
 </p>
 
-> *The three images above are **concept renderings** (mockups) of the UI, not
-> screenshots from a phone. The existing published `COMPASS 0.2` release is
-> the previous build; this working tree has not been device-tested or released.
-> See [Verification](#verification-status).*
+> *The three images above are **concept renderings** (mockups), not device
+> screenshots. This Compass 2.4 source candidate passed repository self-tests
+> and an offline build. A one-off test-signed APK is available in the Arena
+> workspace for sideload testing; it has not been installed or tested on a
+> device and is not a release. `COMPASS 0.2` is separate. See [Verification](#verification-status).*
 
 ---
 
@@ -37,29 +38,26 @@ person who knows the unlock route.
 
 ---
 
-## How the disguise works
+## How access works
 
-The app has two faces, and the second one is only visible to you.
+**The local library is the home screen.** Browse accessible MediaStore images,
+video, and audio, plus files beneath a folder you explicitly choose in
+Android's Storage Access Framework (SAF). The browser cannot crawl arbitrary
+shared storage; documents/APKs outside granted locations are not visible or
+protected. Search, category filters, sorting, refresh, and file details work
+on the items Android exposes.
 
-**Face 1 - the compass (default).**
-A real, working magnetometer compass. The rose turns, the needle points, the
-heading is shown in degrees. Nothing about it is fake.
+**Locked Files is a separate authenticated view.** A file is not reported as
+fully hidden just because it appears in this view: Compass verifies the
+app-private encrypted copy first, then asks Android/provider to remove the
+public source. If removal is cancelled, denied, or ambiguous, the public copy
+is reported as remaining or needing verification.
 
-**Face 2 - the vault.**
-Hidden behind a *secret bearing*. During the setup you choose a number - say
-**137°** - and remember it. Later, whenever you want in, you rotate the
-needle onto that bearing and hold it there for 1.5 seconds. A slim arc
-fills up around the dial, and the vault opens. To a bystander it looks
-exactly like somebody taking their bearings.
-
-If the phone has no magnetometer (or you prefer typing), a **long press on
-the dial** opens a numeric keypad - the classic PIN, protected by an
-escalating brute-force lock-out. If supported biometrics are enrolled and
-you enable the shortcut, the system biometric prompt can open the protected
-UI; the app PIN remains the fallback. Biometric approval is an app-level gate,
-not a key-encryption operation.
-
-Three unlock routes, one very ordinary-looking app.
+The COMPASS heading opens the original working compass screen. If enabled,
+holding its needle on the chosen bearing opens the vault; a long press brings
+up the PIN route. Platform biometrics are optional with the app PIN as a
+fallback. These are app-level UI gates, not cryptographic authorization of
+each file operation.
 
 ---
 
@@ -67,7 +65,7 @@ Three unlock routes, one very ordinary-looking app.
 
 | | |
 |---|---|
-| **All Media** | Browse accessible shared images, videos, and audio through MediaStore, with paging, search, sorting, thumbnails, file details, and partial-access messaging. Android read permissions are optional; SAF can still add individual files. |
+| **Local library** | Browse accessible MediaStore images, videos, and audio, plus a persisted user-selected SAF folder for documents, APKs, and other files. Includes category filters, paging where supported, search, sorting, refresh, type badges, thumbnails, file details, permission/partial-scan messaging, and individual SAF file selection. |
 | **Locked Files** | A separate library for encrypted app-private items, folders, previews, restore/unlock, export, removal retry, and file information. |
 | **Import and verify** | Stream selected content through AES-256-GCM in bounded chunks; decrypt the completed ciphertext to a digest sink and verify its byte count and SHA-256 before reporting import success. |
 | **Source removal** | Only request source deletion after a verified import. Android/provider consent may be required. Compass reports “not fully hidden” unless removal is explicitly confirmed and checked; gallery trash, cloud copies, and other copies remain outside its control. |
@@ -76,7 +74,7 @@ Three unlock routes, one very ordinary-looking app.
 | **Encryption** | AES-256-GCM payloads and encrypted metadata use a non-exportable Android Keystore key. The key is device/installation-bound; uninstalling or losing it can make vault data unrecoverable. |
 | **Biometrics** | Platform biometric APIs when available and enrolled, with explicit error/cancel states and app-PIN fallback. Compass does not access biometric templates or bind the master key to the biometric. |
 | **Folders / search / sorting** | Organize protected files into folders; search and sort the media and vault lists. |
-| **Auto-lock** | Returning to the background immediately replaces the visible vault with the compass disguise; an adjustable grace period then locks the vault and schedules best-effort temporary-file cleanup. |
+| **Auto-lock** | Returning to the background immediately replaces protected screens with the public library; an adjustable grace period then locks the vault and schedules best-effort temporary-file cleanup. |
 | **Brute-force protection** | Five free PIN attempts, escalating delays (up to 15 minutes), and an optional empty decoy route after ten failures. |
 | **Screen capture** | `FLAG_SECURE` asks Android to block ordinary capture and hide the recent-task preview. Device/OEM behavior and external capture are not guaranteed. |
 | **Offline** | No `INTERNET` permission is declared. This is a manifest-level property, not protection from a compromised OS or other apps. |
@@ -142,11 +140,11 @@ tracked in repository history and is considered exposed; do not reuse it.
 TOOLCHAIN=/path/to/toolchain ./tools/build-offline.sh
 ```
 
-By default the script packages an **unsigned** APK under
-`build/offline/out/`. This is for compile/resource/package validation, not a
-releasable APK. The current sandbox build also emits D8 metadata warnings;
-see **[docs/BUILD.md](docs/BUILD.md)** and
-**[docs/VERIFICATION.md](docs/VERIFICATION.md)** for details.
+By default the script packages an **unsigned** `Compass-2.4-unsigned.apk`
+under `build/offline/out/`. This is for compile/resource/package validation,
+not a releasable APK. The available D8/R8 tool emits Kotlin-metadata warnings
+and targets API 34 stubs while Gradle declares compile SDK 35; see
+**[docs/BUILD.md](docs/BUILD.md)** and **[docs/VERIFICATION.md](docs/VERIFICATION.md)**.
 
 ### The app icon
 
@@ -164,15 +162,18 @@ that draws the ring and the needle of the compass at five densities.
 
 ## Install it
 
-Only install a signed APK from a trusted, verified source. The existing
-`dist/Compass-0.2.apk` is the previously published release artifact, not a
-build of this working tree. The unsigned offline validation package cannot
-be installed as a normal release. The current working tree has not been
-installed or tested on a device.
+A one-off test-signed APK was generated for this Arena session and is
+available as a file attachment; it is not committed to this repository or
+hosted on GitHub. It is **not a release APK**. Its temporary signing key was
+deleted after signing, so it cannot update later builds; it also cannot update
+an installation signed with the historical v0.2 key. Do not uninstall an
+existing app with valuable vault data just to install this test build—back up
+first, or use a clean device/emulator. Android may require enabling
+"Install unknown apps" for the app used to open the APK.
 
-**Minimum Android version:** 8.0 (API 26). All Media uses runtime media
-permissions where required; selected SAF documents remain separately
-available.
+**Minimum Android version:** 8.0 (API 26). MediaStore access uses optional
+runtime media permissions; individual files and folders use Android's SAF
+grants. The APK has not yet been installed or exercised on a device.
 
 ---
 
@@ -305,18 +306,18 @@ how the app treats "the wrong person looking at the phone".
 
 ## Verification status
 
-This working tree has passed Kotlin compilation, the JVM crypto self-tests,
-static transaction-order checks, and an unsigned offline package check. It
-has **not** been built with the project's official Gradle toolchain, signed,
-installed, or exercised on a device. The available D8/Kotlin/Android SDK
-versions do not match the configured release toolchain and produced
-metadata warnings. Exact counts, checksum, and remaining device tests are in
-**[docs/VERIFICATION.md](docs/VERIFICATION.md)**.
+This Compass 2.4 candidate compiled and packaged with the offline toolchain;
+`tools/run-selftest.sh` passed 23 crypto assertions and 33 static source checks.
+A test APK signed with a newly generated, non-release key was attached in the
+Arena session; it is intentionally not committed or hosted on GitHub. Its
+v2/v3 signature was verified, then the key was deleted. D8/R8 emitted
+Kotlin-metadata warnings and used API 34 stubs (the Gradle project declares
+compile SDK 35). No normal Gradle build, device installation, emulator run,
+or Android provider/authentication test was performed. Exact hash, signing details, and the manual device checklist
+are in **[docs/VERIFICATION.md](docs/VERIFICATION.md)**.
 
-The generated unsigned test package is not a release artifact. In particular,
-no claims are made about Android permission prompts, MediaStore/SAF provider
-behavior, biometrics, media codecs, or lock timing until device testing has
-been completed.
+A successful compiler or package step does not prove that files are protected,
+removed, restored, or authenticated on a device.
 
 ---
 
@@ -324,13 +325,13 @@ been completed.
 
 The GitHub release **COMPASS 0.2**, tag `v0.2`, remains published and Latest:
 [release page](https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.2) ·
-[download APK](https://raw.githubusercontent.com/WHITE8IRDD/Compass-/v0.2/dist/Compass-0.2.apk).
-Its tag and APK bytes are unchanged; the release notes now show the direct
-APK download and corrected signing warning. GitHub still lists no attached
-binary asset because the sandbox upload request returned EOF. The current
-source changes have **not** been released; no signed APK of this source or
-new tag/release was produced. See [the audit](docs/AUDIT.md) and
-[verification report](docs/VERIFICATION.md).
+[download APK](https://github.com/WHITE8IRDD/Compass-/releases/download/v0.2/Compass-0.2.apk).
+GitHub currently lists the APK and checksum as attached assets. That older
+tag and artifact are separate from this source candidate. **Compass 2.4 has
+not been published**. A temporary test-signed APK exists only for local
+sideloading; no owner-signed release APK or new release was produced. See
+[the audit](docs/AUDIT.md), [verification report](docs/VERIFICATION.md), and
+[release status](docs/RELEASE.md).
 
 ---
 
@@ -368,11 +369,12 @@ do not reuse it. Removing the files here does not erase Git history or revoke
 the old identity; it also does not change the published `v0.2` APK.
 
 A different signing identity cannot update an installed APK signed with the
-old one. No new signed APK was produced from this source tree. The existing
-**COMPASS 0.2** tag/APK remain unchanged; its release notes now link to the
-tagged APK. The release has no uploaded binary asset because the sandbox
-upload host returned EOF. Read [docs/BUILD.md](docs/BUILD.md) before any
-future signing/release work.
+old one. The test APK was signed with a fresh temporary key, not the old
+identity; that temporary key was deleted and the APK is not a release. The
+existing **COMPASS 0.2** tag/APK remain unchanged, with its APK and checksum
+attached. **Compass 2.4** remains device-untested and unpublished; see
+[docs/BUILD.md](docs/BUILD.md), [docs/VERIFICATION.md](docs/VERIFICATION.md),
+and [docs/RELEASE.md](docs/RELEASE.md) before future signing or release.
 
 ---
 

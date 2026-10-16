@@ -35,16 +35,19 @@ interface Navigator {
     /** Replaces the visible screen. */
     fun show(screen: Screen)
 
-    /** Back to the compass (the disguise). */
+    /** Public local file library (shared storage remains subject to Android grants). */
+    fun showLibrary()
+
+    /** Back to the compass screen. */
     fun showCompass()
 
-    /** The vault file list. */
+    /** Opens the authenticated vault list, requesting PIN/biometrics if needed. */
     fun showVault()
 
     /** The PIN entry screen. */
     fun showPin(reason: PinReason = PinReason.FALLBACK)
 
-    /** The settings screen. */
+    /** The protected security settings screen; requests authentication when locked. */
     fun showSettings()
 
     /** The image / audio / video viewer for encrypted vault content. */
@@ -55,6 +58,12 @@ interface Navigator {
 
     /** Opens the system file picker for importing files. */
     fun pickFiles(mimeTypes: Array<String>, onPicked: (List<Uri>) -> Unit)
+
+    /** Asks the owner to grant access to a folder for local document/APK browsing. */
+    fun pickLibraryFolder(onPicked: (Uri) -> Unit)
+
+    /** Opens a public file with an installed compatible viewer (never used for APK installation). */
+    fun openPublicFile(uri: Uri, mimeType: String)
 
     /** Opens the system "save as" dialog for an explicit plaintext export. */
     fun pickExportTarget(suggestedName: String, onTarget: (Uri) -> Unit)
@@ -83,7 +92,13 @@ interface Navigator {
 
 /** Why the PIN screen was opened. */
 enum class PinReason {
-    /** The owner asked for the PIN (e.g. long press on the dial). */
+    /** The owner asked to enter the authenticated vault. */
+    VAULT_ACCESS,
+
+    /** The owner asked to open security settings. */
+    SETTINGS_ACCESS,
+
+    /** The owner asked for the PIN (e.g. an optional compass shortcut). */
     FALLBACK,
 
     /** The secret bearing could not be used (no magnetometer). */

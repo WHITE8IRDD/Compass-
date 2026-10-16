@@ -7,11 +7,13 @@ required.
 
 ## 1. Threat model and honest boundaries
 
-Compass is an offline, app-private encrypted file vault with a compass/PIN
-unlock path. It aims to protect stored file contents from other ordinary apps
-and accidental exposure while the vault is closed. It is **not** a backup
-system, an operating-system security boundary, or a promise that every copy
-of a file has disappeared from shared storage.
+Compass 2.4 is an offline, app-private encrypted vault paired with a local
+file browser. The post-setup home is the library; the existing working compass
+screen remains available from its COMPASS heading, and PIN/biometric
+authentication gates the encrypted vault. It aims to protect stored file
+contents from other ordinary apps while the vault is closed. It is **not** a
+backup system, an operating-system security boundary, or a promise that every
+copy of a file has disappeared from shared storage.
 
 The Android sandbox, the Keystore implementation, device lock, OS integrity,
 and the user-approved storage providers are part of the trust boundary.
@@ -52,8 +54,12 @@ external camera, and physical flash-forensics are outside Compass's guarantees.
 
 The PIN is 4–8 digits and is hashed with PBKDF2-HMAC-SHA256, a random
 16-byte salt, and 250,000 rounds. The authentication state is encrypted with
-the Keystore key. Failed attempts trigger escalating delays and an optional
-decoy route.
+the Keystore key and atomically replaced. Failed attempts trigger escalating
+delays and an optional decoy route. If authenticated state cannot be read,
+Compass fails closed instead of presenting a fresh setup flow; the encrypted
+vault data is preserved, but access can remain unavailable if the Keystore
+key is lost or invalidated. Do not clear app data or reinstall in an attempt to
+recover it.
 
 The compass bearing, app PIN, and biometric prompt control access to the
 protected UI. The platform biometric prompt is **not** used as a cryptographic
@@ -70,14 +76,17 @@ authentication is not an independent storage boundary.
 2. Compass streams the selected content into app-private encrypted storage.
    It verifies the ciphertext by decrypting into a digest sink and checks
    byte count and SHA-256. Import itself never deletes the source.
-3. Only after import returns successfully does the UI ask Android/provider
-   to remove that individual source. On modern Android, deleting a
-   MediaStore-owned item may require a system consent UI; SAF providers may
-   have separate delete behavior.
-4. Compass records **PRIVATE_ONLY** only after a successful delete result
-   and a follow-up absence/read check. A cancelled, denied, failed, or
-   ambiguous removal stays marked as public or unknown and is visibly
-   reported as **not fully hidden**.
+3. Before journaling a delete request, the repository reopens the exact source
+   URI and compares its size and digest with the encrypted copy. A changed or
+   unreadable source is not submitted for deletion. Only then does the UI ask
+   Android/provider to remove that individual source. MediaStore deletion may
+   require system consent; SAF providers may have separate behavior.
+4. Compass journals source removal before asking for consent. It records
+   **PRIVATE_ONLY** only after a successful delete result and a follow-up
+   absence/read check. If the process stops during consent, recovery rechecks
+   the exact source URI before deciding its status. A cancelled, denied,
+   failed, or ambiguous removal stays public/pending and is reported as
+   **not fully hidden**.
 
 This is conservative, but Android permission scoping and provider behavior
 can vary. If an empty query is ambiguous because access is partial or
@@ -92,15 +101,18 @@ is not eligible for removal until the complete verified import has returned.
 
 ## 4. Restore, export, and deletion behavior
 
-- When the original media source is still readable and its digest matches,
-  unlock can reuse that exact item and then remove the encrypted copy.
-- For sources previously marked public but no longer safely inspectable,
-  Compass asks for a restore destination instead of guessing that the source
-  is gone or silently creating a duplicate.
-- For a confirmed private MediaStore source, Compass attempts to restore to
-  the saved media volume/folder using a pending item. It publishes only after
-  write/read-back verification. For SAF documents and unsupported locations,
-  the user chooses a destination.
+- When the original source is still readable and its digest matches, unlock
+  recognizes that the identical public copy is already present; it does not
+  write over it. The encrypted entry is removed only after that exact content
+  is verified.
+- For a source marked public but no longer safely inspectable, Compass asks
+  for a restore destination instead of guessing that the source is gone or
+  silently creating a duplicate.
+- For a confirmed private SAF-tree source, Compass attempts to recreate the
+  file in the recorded, user-approved folder using a conflict-safe name. For
+  supported confirmed private MediaStore media it attempts the saved volume
+  and folder using a pending row. Both paths require read-back verification.
+  Unsupported locations use the system save picker.
 - **Export** is an explicit plaintext copy. The encrypted vault copy stays
   in place. A failed/unverifiable export attempts provider cleanup and keeps
   the encrypted copy; provider cleanup itself can fail and the app reports
@@ -161,13 +173,11 @@ Git history or revoke the previous signing identity. Treat it as exposed and
 do not reuse it for a new release.
 
 The existing GitHub release **COMPASS 0.2** at tag `v0.2` remains published
-and Latest. Its tag and APK bytes are unchanged; the release notes now contain
-a direct download link and a replacement warning about the exposed signing
-material. The release still has no attached binary assets because the sandbox
-upload to GitHub returned EOF. No signed APK or new release was produced from
-this working tree. A different signing identity cannot update an installed
-app signed with the previous identity; any versioning, migration, or new app
-identity requires an explicit owner release decision.
+and Latest, with the APK and checksum assets attached. It is separate from the
+Compass 2.4 working tree. No signed APK or new release was produced from this
+source. A different signing identity cannot update an installed app signed
+with the previous identity; any future release needs an explicit owner decision
+and a safely provisioned new key.
 
 ## 9. Before using real files
 

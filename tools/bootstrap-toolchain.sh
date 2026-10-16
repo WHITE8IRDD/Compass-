@@ -6,7 +6,7 @@
 # registries that a sandbox can always reach:
 #
 #   PyPI  jdk4py              -> a full JDK 17 (java, keytool, jar)
-#   npm   kotlin-compiler     -> kotlinc 2.4.21 + the Kotlin standard library
+#   npm   kotlin-compiler     -> kotlinc 2.0.21 + the Kotlin standard library
 #   npm   @drxiaozhi/minapk   -> android.jar (API 30), d8, apksigner, ecj
 #   npm   aaptjs3             -> aapt2 (Linux x64)
 #
@@ -30,7 +30,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 JDK_VERSION="17.0.9.2"
-KOTLIN_VERSION="2.4.21"
+KOTLIN_VERSION="2.0.21"
 MINAPK_VERSION="0.4.0"
 
 say() { printf '\n\033[1;37m==> %s\033[0m\n' "$1"; }

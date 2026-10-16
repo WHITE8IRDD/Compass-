@@ -37,6 +37,7 @@ BUILD="${BUILD:-$ROOT/build/offline}"
 OUT="${OUT:-$BUILD/out}"
 
 JAVA_HOME="${JAVA_HOME:-$TOOLCHAIN/jdk}"
+export PATH="$JAVA_HOME/bin:$PATH"
 KOTLIN_HOME="${KOTLIN_HOME:-$TOOLCHAIN/kotlin}"
 ANDROID_PLATFORM="${ANDROID_PLATFORM:-$TOOLCHAIN/android/platforms/android-34}"
 ANDROID_JAR="$ANDROID_PLATFORM/android.jar"
@@ -111,8 +112,8 @@ PY
     --java "$BUILD/gen" \
     --min-sdk-version 26 \
     --target-sdk-version 35 \
-    --version-code 3 \
-    --version-name 0.2 \
+    --version-code 24 \
+    --version-name 2.4 \
     --auto-add-overlay \
     -o "$BUILD/base.apk" \
     "$BUILD"/res/*.flat
@@ -164,18 +165,18 @@ if [[ -n "$SIGNING_KEYSTORE" ]]; then
         --v1-signing-enabled true \
         --v2-signing-enabled true \
         --v3-signing-enabled true \
-        --out "$OUT/Compass-Enhanced-0.2.apk" \
+        --out "$OUT/Compass-2.4.apk" \
         "$BUILD/unsigned.apk"
 
     say "Verifying signature"
-    "$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" verify --verbose --print-certs "$OUT/Compass-Enhanced-0.2.apk"
+    "$JAVA_HOME/bin/java" -jar "$APKSIGNER_JAR" verify --verbose --print-certs "$OUT/Compass-2.4.apk"
     echo
-    echo "Signed APK: $OUT/Compass-Enhanced-0.2.apk"
-    ls -la "$OUT/Compass-Enhanced-0.2.apk"
+    echo "Signed APK: $OUT/Compass-2.4.apk"
+    ls -la "$OUT/Compass-2.4.apk"
 else
     say "Signing skipped; no external signing credentials configured"
-    cp "$BUILD/unsigned.apk" "$OUT/Compass-Enhanced-0.2-unsigned.apk"
+    cp "$BUILD/unsigned.apk" "$OUT/Compass-2.4-unsigned.apk"
     echo
-    echo "Unsigned APK (not installable as a release): $OUT/Compass-Enhanced-0.2-unsigned.apk"
-    ls -la "$OUT/Compass-Enhanced-0.2-unsigned.apk"
+    echo "Unsigned APK (not installable as a release): $OUT/Compass-2.4-unsigned.apk"
+    ls -la "$OUT/Compass-2.4-unsigned.apk"
 fi

@@ -1,25 +1,51 @@
 # Release status
 
-## Current public release
+## Target release: Compass 2.4
 
-**COMPASS 0.2** at tag [`v0.2`](https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.2) remains the GitHub Latest release. The tag and APK contents were not changed. The release notes were updated on 2026-10-16 to add a prominent APK download link and replace the obsolete keystore advice.
+**Compass 2.4** is the exact intended release name for this source candidate
+(`versionName` `2.4`, `versionCode` `24`). It is **not published** and is not
+release-ready from the checks performed here.
 
-- Tagged APK: [`dist/Compass-0.2.apk`](https://github.com/WHITE8IRDD/Compass-/blob/v0.2/dist/Compass-0.2.apk)
-- Direct download: <https://raw.githubusercontent.com/WHITE8IRDD/Compass-/v0.2/dist/Compass-0.2.apk>
-- Size: **4,052,764 bytes**
-- SHA-256: `0d2e11e3674cb5651f692bfc5b96e9a130dff18a06e98c846e2e72e80df30f25`
-- ZIP integrity passed; APK signature schemes v1, v2, and v3 verified locally.
+- Default offline output: `build/offline/out/Compass-2.4-unsigned.apk`.
+- A separate sideload-test APK was generated at the session-local,
+  Git-ignored path `downloads/Compass-2.4-test.apk`; it was signed with a fresh
+  temporary test key and verified with `apksigner`. It is not committed or
+  uploaded to GitHub, and is not an owner-signed release.
+- No Compass 2.4 GitHub release was created by this work.
+- No owner-controlled release signature, device test, emulator test, or normal
+  Gradle release build was produced.
+- The offline build had D8 Kotlin-metadata warnings and used Android API 34
+  stubs while the Gradle project declares compile SDK 35.
 
-The release currently has no binary assets attached. An attempt to upload the existing APK and checksum file failed when the build environment's connection to `uploads.github.com` returned EOF. The release page now links directly to the APK stored in the `v0.2` tag. This source tree has not been published as a new release.
+Do not distribute the temporary test-signed artifact as a release or represent
+compilation/signature verification as proof that file operations or
+authentication work on Android. The one-off test keystore was deleted, so this
+APK cannot update a later build; its signature also cannot update the
+historical v0.2 install. Before publication, require a compatible official
+build, a freshly provisioned owner-controlled signing key, signature and
+checksum verification, the manual device tests in [VERIFICATION.md](VERIFICATION.md),
+and explicit release approval. Do not reuse historical signing material.
 
-The current-source offline APK is a separate, **unsigned test build**; it is not the published v0.2 artifact. Its checksum and limitations are recorded in [VERIFICATION.md](VERIFICATION.md).
+## Existing public release
 
-## Signing and release safety
+GitHub currently lists **COMPASS 0.2** at tag [`v0.2`](https://github.com/WHITE8IRDD/Compass-/releases/tag/v0.2) as Latest. It is an older, separate artifact and has not been overwritten by the Compass 2.4 work.
 
-Signing material used for the existing APK was tracked in repository history and must be treated as exposed. The files have been removed from the working tree; do not reuse the old signing identity. Current builds are unsigned by default. Optional signing is configured through externally supplied `COMPASS_RELEASE_*` environment variables; see [BUILD.md](BUILD.md).
+- Attached APK: [`Compass-0.2.apk`](https://github.com/WHITE8IRDD/Compass-/releases/download/v0.2/Compass-0.2.apk)
+- Attached checksum: [`Compass-0.2.apk.sha256`](https://github.com/WHITE8IRDD/Compass-/releases/download/v0.2/Compass-0.2.apk.sha256)
+- Repository APK size: **4,052,764 bytes**
+- Repository APK SHA-256: `0d2e11e3674cb5651f692bfc5b96e9a130dff18a06e98c846e2e72e80df30f25`
 
-No signed APK of the current source has been produced. Any future public release needs a new version/tag and newly provisioned private signing material, plus a verified build, signature, checksum, device testing, and explicit release approval. A different signing key may prevent in-place upgrades. Do not overwrite or recreate `v0.2`.
+The repository copy's ZIP integrity and historical signature schemes were
+previously checked. That is not verification of the Compass 2.4 source or
+artifact. The old signing identity was exposed in repository history; do not
+reuse it. A new signing identity may not update installations signed by the
+old key.
 
-## Historical notes
+## Release safeguards
 
-The old v0.1 release description is preserved in [RELEASE-NOTES.md](RELEASE-NOTES.md) for historical context only. Its old signing, tag, and publication commands are obsolete and must not be used for the current source.
+- Preserve the existing `v0.2` tag/release and APK bytes.
+- Do not attach the temporary test-signed Compass 2.4 APK as a public release asset.
+- Do not generate or commit signing keys/passwords, and never request them in
+  chat.
+- Publish only after the verification gates above are completed and the owner
+  approves the exact release name **Compass 2.4**.

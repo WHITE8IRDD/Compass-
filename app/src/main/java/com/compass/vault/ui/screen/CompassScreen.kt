@@ -165,7 +165,10 @@ class CompassScreen(
         sensor.stop()
     }
 
-    override fun onBack(): Boolean = false
+    override fun onBack(): Boolean {
+        navigator.showLibrary()
+        return true
+    }
 
     // -----------------------------------------------------------------------
     // The unlock gesture

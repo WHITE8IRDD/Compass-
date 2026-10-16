@@ -1,6 +1,7 @@
 package com.compass.vault
 
 import android.app.Application
+import com.compass.vault.data.DocumentTreeLibraryRepository
 import com.compass.vault.data.MediaLibraryRepository
 import com.compass.vault.data.VaultRepository
 import com.compass.vault.security.KeystoreCipher
@@ -50,6 +51,9 @@ class AppGraph(application: Application) {
 
     /** Scoped MediaStore discovery and in-memory thumbnail cache. */
     val mediaLibrary = MediaLibraryRepository(application)
+
+    /** SAF folder discovery for documents, APKs, and other user-approved files. */
+    val documentLibrary = DocumentTreeLibraryRepository(application, cipher)
 
     /** Open/locked state of the vault + the auto-lock policy. */
     val lockController = LockController(

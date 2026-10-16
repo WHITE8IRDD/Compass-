@@ -1,6 +1,58 @@
+# Compass 2.4 — draft release notes (not published)
+
+**Release name:** Compass 2.4
+
+**Status:** Draft source candidate. A one-off test-signed APK exists only for sideload testing; no owner-signed release or GitHub release exists.
+
+Compass 2.4 is intended to turn the existing Compass app into an offline
+local-file browser with an encrypted vault. The current source candidate
+includes:
+
+- A browsable public library for accessible photos, videos, and audio, plus a
+  user-selected SAF folder for documents, APKs, and other files.
+- Category filters, name search, sorting, refresh, type badges, thumbnails,
+  and file details.
+- Streamed AES-GCM import into app-private storage with digest verification
+  before any source-removal request.
+- Durable source-removal and restore transaction states, conservative
+  reporting when Android cannot confirm deletion, and recovery-before-listing.
+- Restore/unlock, export, folder organization, and protected image/video/audio
+  viewing, subject to provider permissions and Android support.
+- Optional Android biometric authentication with PIN fallback; no network
+  permission or remote service is required.
+
+## Important limits
+
+This draft has passed repository self-tests and offline compile/package
+validation. A separate test APK was signed with a freshly generated temporary
+key so it can be sideloaded; it is not an owner-signed release. Android
+MediaStore/SAF behavior, delete consent, restore recovery, biometric prompts,
+UI/accessibility, playback, and lifecycle have not been tested on a device or
+emulator. The offline D8 step emitted Kotlin-metadata warnings and used API 34
+stubs while the project declares compile SDK 35. The temporary test keystore
+was deleted; do not distribute the test APK as a release or treat the build as
+an installable production update.
+
+Compass can browse only items Android exposes through MediaStore or an
+explicit user-selected SAF grant. It cannot inspect arbitrary storage, empty
+gallery trash, remove cloud copies, or guarantee physical erasure on flash
+storage. A public original is not considered protected unless Android/provider
+removal is confirmed. Keep independent backups; do not first test with valuable
+files.
+
+Release/signing requirements and exact validation results are recorded in
+[RELEASE.md](RELEASE.md) and [VERIFICATION.md](VERIFICATION.md). The existing
+COMPASS 0.2 release remains unchanged. Historical signing material is exposed
+and must not be reused.
+
+---
+
 # Historical release notes — Compass 0.1
 
-> These notes describe only the old `v0.1` artifact. The published Latest release is **COMPASS 0.2** at `v0.2`; the current working tree has not been released. The previous signing material was tracked in repository history and is considered exposed. Do not reuse it. See the current [verification report](VERIFICATION.md) and [release status](RELEASE.md).
+> These notes describe only the old `v0.1` artifact. The published Latest
+> release is **COMPASS 0.2** at `v0.2`; these instructions do not apply to
+> Compass 2.4. The previous signing material was tracked in repository history
+> and is considered exposed. Do not reuse it.
 
 ## Compass 0.1
 
@@ -12,7 +64,7 @@ hold the needle on it for 1.5 seconds) is an AES-256-GCM encrypted vault
 for your private photos, videos and documents. A long press on the dial
 opens a PIN keypad, and a fingerprint works too.
 
-### What is in this release
+### What was in that release
 
 - Real magnetometer compass (rotation vector, with an accelerometer
   fallback), drawn by hand with `Canvas` - no image assets.
@@ -31,14 +83,14 @@ opens a PIN keypad, and a fingerprint works too.
   screen, backups disabled.
 - **No `INTERNET` permission. The app is permanently offline.**
 
-### Minimum Android version
+### Historical minimum Android version
 
 **Android 8.0 (API 26)** or newer. Biometric unlock needs Android 9 (API
 28) or newer; on older versions the PIN and the secret bearing work.
 
-### Installing it
+### Historical installation directions
 
-1. Download `Compass-0.1.apk` from this release.
+1. Download `Compass-0.1.apk` from the `v0.1` release.
 2. Copy it to your phone (or download it straight on the phone).
 3. Open the file. Android asks you to allow **"install unknown apps"** for
    the app you are opening it with - that is the file manager or browser,
@@ -47,47 +99,24 @@ opens a PIN keypad, and a fingerprint works too.
    **Settings -> Apps -> Special app access -> Install unknown apps ->
    pick the app you are using (Files / Chrome / ...) -> Allow from this
    source.**
-5. Go back and tap `Compass-0.1.apk` again. Done.
+5. Go back and tap `Compass-0.1.apk` again.
 
-The app itself asks for **no permissions** except biometrics and
-vibration. It cannot access your files until you pick them with the
-system picker.
+The app itself asked for no permissions except biometrics and vibration. It
+could not access files until they were selected with the system picker.
 
-### First launch
+### Historical signing note
 
-The setup wizard asks for a PIN (4-8 digits) and for your secret bearing.
-Then it shows one warning, and it means it:
+The v0.1 signing material was tracked in repository history and is treated as
+exposed; it must not be reused. These historical release instructions and
+commands are preserved for record only and are obsolete for Compass 2.4.
 
-> **Files live inside the app. Uninstalling the app deletes it forever.**
+### Historical APK location
 
-There is no cloud copy. If you delete the app - or lose the phone - the
-vault is gone. Keep your own backups of anything you cannot lose.
+- `https://github.com/WHITE8IRDD/Compass-/raw/v0.1/dist/Compass-0.1.apk`
+- Repository path: `dist/Compass-0.1.apk` on the `v0.1` tag
 
-### Historical signing note — obsolete
+Historical SHA-256:
 
-This note belonged to the v0.1 release. The signing material was tracked in
-repository history and is treated as exposed; it was removed from the current
-working tree and must not be reused. The existing v0.2 release remains
-published; no signed build of the current source has been created.
-
-### Where to get the APK
-
-The release asset could not be attached to this page by the machine that
-built it (its network blocks GitHub's asset upload host). The signed APK is
-committed to the repository and can be downloaded directly:
-
-- **https://github.com/WHITE8IRDD/Compass-/raw/v0.1/dist/Compass-0.1.apk**
-- or from the repository itself: `dist/Compass-0.1.apk` on the `v0.1` tag
-
-It is the same file: `Compass-0.1.apk`, signed with the release key
-(v1 + v2 + v3, RSA-4096). You can verify it with
-
-```bash
-apksigner verify --verbose Compass-0.1.apk
-```
-
-SHA-256 of the release build:
-
-```
+```text
 10d18df237a3307b33c31f585e1007e2d254d074c3237dee4795f3875a35731b
 ```

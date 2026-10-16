@@ -53,12 +53,15 @@ class MainActivity : Activity(), Navigator {
         private const val REQUEST_DELETE_ORIGINAL = 1004
         private const val REQUEST_MEDIA_PERMISSION = 1005
         private const val REQUEST_LEGACY_WRITE_PERMISSION = 1006
+        private const val REQUEST_PICK_LIBRARY_FOLDER = 1007
         private const val STATE_ROUTE = "route"
         private const val ROUTE_SETUP = "setup"
         private const val ROUTE_COMPASS = "compass"
+        private const val ROUTE_LIBRARY = "library"
         private const val ROUTE_VAULT = "vault"
         private const val ROUTE_SETTINGS = "settings"
         private const val ROUTE_VIEWER = "viewer"
+        private const val ROUTE_PIN = "pin"
     }
 
     private lateinit var graph: AppGraph
@@ -70,6 +73,8 @@ class MainActivity : Activity(), Navigator {
     private var viewerFile: VaultFile? = null
 
     private var pendingPickCallback: ((List<Uri>) -> Unit)? = null
+    private var pendingLibraryFolderCallback: ((Uri) -> Unit)? = null
+    private var pendingVaultViewer: VaultFile? = null
     private var pendingExportCallback: ((Uri) -> Unit)? = null
     private var pendingRestoreCallback: ((Uri) -> Unit)? = null
     private var pendingDeleteCallback: ((Boolean, String?) -> Unit)? = null
@@ -90,15 +95,13 @@ class MainActivity : Activity(), Navigator {
     private val lockListener = object : LockController.Listener {
         override fun onLockChanged(unlocked: Boolean) {
             if (!unlocked) {
-                // The vault closed: go back to the compass disguise and drop
-                // any decrypted state that is still on screen.
+                // Remove authenticated routes immediately; the public browser
+                // contains only files Android still exposes outside the vault.
                 viewerFile = null
-                if (route != ROUTE_SETUP) {
-                    route = ROUTE_COMPASS
-                    // The lock fires while the app is in the background, so
-                    // the screen is only rendered - the magnetometer is
-                    // started again in onStart.
-                    show(CompassScreen(this@MainActivity, graph, this@MainActivity), activate = false)
+                pendingVaultViewer = null
+                if (route != ROUTE_SETUP && route != ROUTE_LIBRARY) {
+                    route = ROUTE_LIBRARY
+                    show(VaultScreen(this@MainActivity, graph, this@MainActivity), activate = false)
                 }
             }
         }
@@ -141,33 +144,20 @@ class MainActivity : Activity(), Navigator {
 
     override fun onStart() {
         super.onStart()
-        // If the vault is still inside its grace period we bring the owner
-        // straight back to the vault instead of asking for the gesture again.
-        if (graph.lockController.onReturnedToForeground()) {
-            // Only replace the screen when it is not the vault already -
-            // returning from the system picker must not restart the screen,
-            // because that would cancel a running import.
-            if (route != ROUTE_VAULT || currentScreen == null) {
-                route = ROUTE_VAULT
-                show(VaultScreen(this, graph, this))
-            }
-        } else {
-            // Re-activate whatever is on screen (the compass sensor, ...).
-            currentScreen?.onShow()
-        }
+        // The grace period affects whether the authenticated tab may be opened;
+        // the public library stays the visible home after a background switch.
+        graph.lockController.onReturnedToForeground()
+        currentScreen?.onShow()
     }
 
     override fun onStop() {
         super.onStop()
-        // Backgrounded: arm the auto-lock and immediately switch the visible
-        // screen back to the compass, so nothing but a compass is on screen
-        // when the app is looked at from the launcher / recents.
         graph.lockController.onEnteredBackground()
         if (graph.lockController.isUnlocked && !systemPickerOpen) {
-            // Switch back to the compass disguise, but do not start the
-            // magnetometer while we are in the background.
-            route = ROUTE_COMPASS
-            show(CompassScreen(this, graph, this), activate = false)
+            // Replace protected rows/viewers before the task is shown in recents.
+            // Do not start any sensors or scanning work while in the background.
+            route = ROUTE_LIBRARY
+            show(VaultScreen(this, graph, this), activate = false)
         }
     }
 
@@ -185,7 +175,7 @@ class MainActivity : Activity(), Navigator {
     override fun onBackPressed() {
         if (currentScreen?.onBack() == true) return
         when (route) {
-            ROUTE_VAULT, ROUTE_SETTINGS, ROUTE_VIEWER -> showCompass()
+            ROUTE_VAULT, ROUTE_SETTINGS, ROUTE_VIEWER, ROUTE_PIN -> showLibrary()
             else -> super.onBackPressed()
         }
     }
@@ -215,27 +205,54 @@ class MainActivity : Activity(), Navigator {
         if (activate) screen.onShow()
     }
 
+    override fun showLibrary() {
+        pendingVaultViewer = null
+        route = ROUTE_LIBRARY
+        show(VaultScreen(this, graph, this))
+    }
+
     override fun showCompass() {
         route = ROUTE_COMPASS
         show(CompassScreen(this, graph, this))
     }
 
     override fun showVault() {
-        route = ROUTE_VAULT
-        show(VaultScreen(this, graph, this))
+        if (!graph.lockController.isUnlocked) {
+            showPin(PinReason.VAULT_ACCESS)
+            return
+        }
+        val pending = pendingVaultViewer
+        pendingVaultViewer = null
+        if (pending != null) {
+            route = ROUTE_VIEWER
+            viewerFile = pending
+            show(ViewerScreen(this, graph, this, pending))
+        } else {
+            route = ROUTE_VAULT
+            show(VaultScreen(this, graph, this, initialLocked = true))
+        }
     }
 
     override fun showPin(reason: PinReason) {
-        route = ROUTE_COMPASS
+        route = ROUTE_PIN
         show(PinScreen(this, graph, this, reason))
     }
 
     override fun showSettings() {
+        if (!graph.lockController.isUnlocked) {
+            showPin(PinReason.SETTINGS_ACCESS)
+            return
+        }
         route = ROUTE_SETTINGS
         show(SettingsScreen(this, graph, this))
     }
 
     override fun showViewer(file: VaultFile) {
+        if (!graph.lockController.isUnlocked) {
+            pendingVaultViewer = file
+            showPin(PinReason.VAULT_ACCESS)
+            return
+        }
         route = ROUTE_VIEWER
         viewerFile = file
         show(ViewerScreen(this, graph, this, file))
@@ -270,6 +287,44 @@ class MainActivity : Activity(), Navigator {
             systemPickerOpen = false
             pendingPickCallback = null
             toast("The system file picker could not be opened")
+        }
+    }
+
+    override fun pickLibraryFolder(onPicked: (Uri) -> Unit) {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            )
+        }
+        pendingLibraryFolderCallback = onPicked
+        systemPickerOpen = true
+        try {
+            startActivityForResult(intent, REQUEST_PICK_LIBRARY_FOLDER)
+        } catch (_: Exception) {
+            systemPickerOpen = false
+            pendingLibraryFolderCallback = null
+            toast("Android could not open the folder picker")
+        }
+    }
+
+    override fun openPublicFile(uri: Uri, mimeType: String) {
+        if (mimeType == "application/vnd.android.package-archive" ||
+            uri.lastPathSegment?.endsWith(".apk", ignoreCase = true) == true
+        ) {
+            toast("APK files can be protected as files; Compass will not install or execute them")
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType.takeIf { it.isNotBlank() } ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivity(intent)
+        } catch (_: Exception) {
+            toast("No installed app can open this file type")
         }
     }
 
@@ -478,6 +533,26 @@ class MainActivity : Activity(), Navigator {
         super.onActivityResult(requestCode, resultCode, data)
         systemPickerOpen = false
         when (requestCode) {
+            REQUEST_PICK_LIBRARY_FOLDER -> {
+                val uri = data?.data
+                val returnedFlags = data?.flags ?: 0
+                val persistableFlags = returnedFlags and (
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+                if (resultCode == Activity.RESULT_OK && uri != null) {
+                    try { contentResolver.takePersistableUriPermission(uri, persistableFlags) }
+                    catch (_: Exception) {
+                        toast("Android did not allow persistent access to this folder")
+                        return
+                    }
+                    val callback = pendingLibraryFolderCallback
+                    pendingLibraryFolderCallback = null
+                    callback?.invoke(uri)
+                } else {
+                    pendingLibraryFolderCallback = null
+                }
+            }
+
             REQUEST_PICK_FILES -> {
                 val uris = mutableListOf<Uri>()
                 data?.data?.let(uris::add)
@@ -567,17 +642,19 @@ class MainActivity : Activity(), Navigator {
         when {
             !graph.pinStore.isSetupDone() -> {
                 route = ROUTE_SETUP
-                show(SetupScreen(this, graph, this))
+                show(SetupScreen(this, graph, this), activate = false)
             }
 
             graph.lockController.isUnlocked -> {
                 route = ROUTE_VAULT
-                show(VaultScreen(this, graph, this))
+                show(VaultScreen(this, graph, this, initialLocked = true), activate = false)
             }
 
             else -> {
-                route = ROUTE_COMPASS
-                show(CompassScreen(this, graph, this))
+                // The local file browser is the home screen; opening the
+                // authenticated vault tab still requires PIN/biometrics.
+                route = ROUTE_LIBRARY
+                show(VaultScreen(this, graph, this), activate = false)
             }
         }
     }

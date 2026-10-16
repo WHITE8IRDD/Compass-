@@ -61,7 +61,7 @@ class SettingsScreen(
         }
         val back = activity.label("BACK", Type.LABEL, Palette.WHITE, 0.18f)
         back.setPadding(0, activity.dp(Spacing.SM), 0, activity.dp(Spacing.SM))
-        back.setOnClickListener { navigator.showVault() }
+        back.setOnClickListener { navigator.showLibrary() }
         topBar.addView(back)
         topBar.addView(activity.hspace(Spacing.MD))
         val title = activity.body("SETTINGS", Type.SCREEN_TITLE, Palette.WHITE, 600)
@@ -92,7 +92,7 @@ class SettingsScreen(
     }
 
     override fun onBack(): Boolean {
-        navigator.showVault()
+        navigator.showLibrary()
         return true
     }
 
@@ -152,7 +152,7 @@ class SettingsScreen(
         // --- about -----------------------------------------------------------
         container.addView(sectionLabel("ABOUT"))
         container.addView(activity.hairline())
-        container.addView(activity.settingRow("Version", "0.1") { showAboutDialog() })
+        container.addView(activity.settingRow("Version", "2.4") { showAboutDialog() })
         container.addView(activity.hairline())
 
         scope.launch {
@@ -209,13 +209,12 @@ class SettingsScreen(
             .setMessage("Point the needle at this bearing and hold it to open the vault.")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
-                graph.pinStore.setSecretBearing(seek.progress.toFloat())
-                graph.pinStore.setBearingEnabled(true)
-                buildRows()
+                if (graph.pinStore.setCompassUnlock(seek.progress.toFloat(), enabled = true)) buildRows()
+                else navigator.toast("Could not save the compass unlock setting")
             }
             .setNeutralButton("Turn off") { _, _ ->
-                graph.pinStore.setBearingEnabled(false)
-                buildRows()
+                if (graph.pinStore.setBearingEnabled(false)) buildRows()
+                else navigator.toast("Could not save the compass unlock setting")
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -223,8 +222,8 @@ class SettingsScreen(
 
     private fun toggleBiometric() {
         if (graph.pinStore.isBiometricEnabled()) {
-            graph.pinStore.setBiometricEnabled(false)
-            buildRows()
+            if (graph.pinStore.setBiometricEnabled(false)) buildRows()
+            else navigator.toast("Could not save the biometric setting")
             return
         }
         val gate = com.compass.vault.security.BiometricGate(activity)
@@ -244,8 +243,8 @@ class SettingsScreen(
             biometricHandle = null
             when (result) {
                 com.compass.vault.security.BiometricGate.Result.Success -> {
-                    graph.pinStore.setBiometricEnabled(true)
-                    buildRows()
+                    if (graph.pinStore.setBiometricEnabled(true)) buildRows()
+                    else navigator.toast("Could not save the biometric setting")
                 }
                 com.compass.vault.security.BiometricGate.Result.Cancelled -> Unit
                 is com.compass.vault.security.BiometricGate.Result.Error -> {
@@ -261,8 +260,8 @@ class SettingsScreen(
 
     private fun toggleDecoy() {
         val enabled = graph.pinStore.isDecoyEnabled()
-        graph.pinStore.setDecoyEnabled(!enabled)
-        buildRows()
+        if (graph.pinStore.setDecoyEnabled(!enabled)) buildRows()
+        else navigator.toast("Could not save the decoy setting")
     }
 
     private fun showAutoLockDialog() {
@@ -278,7 +277,7 @@ class SettingsScreen(
         AlertDialog.Builder(activity)
             .setTitle("Auto-lock")
             .setSingleChoiceItems(options, checked) { dialog, which ->
-                graph.pinStore.setGraceSeconds(
+                val saved = graph.pinStore.setGraceSeconds(
                     when (which) {
                         0 -> 0
                         1 -> 5
@@ -287,7 +286,7 @@ class SettingsScreen(
                         else -> 300
                     }
                 )
-                buildRows()
+                if (saved) buildRows() else navigator.toast("Could not save the auto-lock setting")
                 dialog.dismiss()
             }
             .setNegativeButton("Cancel", null)
@@ -296,7 +295,7 @@ class SettingsScreen(
 
     private fun showAboutDialog() {
         AlertDialog.Builder(activity)
-            .setTitle("Compass 0.2")
+            .setTitle("Compass 2.4")
             .setMessage(
                 "A private file vault behind a compass.\n\n" +
                     "Vault payloads are encrypted with AES-256-GCM using a key held by Android Keystore. " +
